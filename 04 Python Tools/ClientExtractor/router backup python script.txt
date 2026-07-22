@@ -1,0 +1,376 @@
+router.py backupppppppppppppp
+
+
+import json
+import re
+
+from langchain_ollama import ChatOllama
+
+from csai_langchain.Retrieval.normalizer import (
+    normalize_match
+)
+
+#########################################################
+# LOAD FALLBACK ROUTER MODEL
+#########################################################
+
+router_llm = ChatOllama(
+    model="qwen2.5:3b",
+    temperature=0,
+    num_predict=80,
+    base_url="http://127.0.0.1:11434"
+)
+
+
+#########################################################
+# HELPER
+#########################################################
+
+def build_result(
+    intent="knowledge",
+    company="",
+    person=""
+):
+
+    return {
+
+        "intent":
+            intent,
+
+        "company":
+            normalize_match(
+                company
+            ),
+
+        "person":
+            normalize_match(
+                person
+            )
+    }
+
+
+#########################################################
+# RULE ROUTER
+#########################################################
+
+def rule_route(question):
+
+    q = question.lower()
+
+    #####################################################
+    # GREETING
+    #####################################################
+
+    if any(
+        x in q
+        for x in [
+            "hello",
+            "hi",
+            "hey",
+            "thanks",
+            "thank you"
+        ]
+    ):
+
+        return build_result(
+            intent="greeting"
+        )
+
+    #####################################################
+    # DIRECTOR
+    #####################################################
+
+    if any(
+        x in q
+        for x in [
+            "director",
+            "directors"
+        ]
+    ):
+
+        if (
+            "appointed as director"
+            in q
+            or "which companies"
+            in q
+            or "list all companies"
+            in q
+        ):
+
+            return None
+
+        return build_result(
+            intent="director"
+        )
+
+    #####################################################
+    # SHAREHOLDER
+    #####################################################
+
+    if any(
+        x in q
+        for x in [
+            "shareholder",
+            "shareholders",
+            "member",
+            "members"
+        ]
+    ):
+
+        if (
+            "which companies"
+            in q
+        ):
+
+            return None
+
+        return build_result(
+            intent="shareholder"
+        )
+
+    #####################################################
+    # BENEFICIAL OWNER
+    #####################################################
+
+    if (
+        "beneficial owner"
+        in q
+        or "bo"
+        in q
+    ):
+
+        return build_result(
+            intent="beneficial_owner"
+        )
+
+    #####################################################
+    # PERSON DIRECTORSHIP
+    #####################################################
+
+    if any(
+        x in q
+        for x in [
+            "appointed as director",
+            "directorship",
+            "which companies is",
+            "companies related to"
+        ]
+    ):
+
+        return build_result(
+            intent=
+                "person_directorship"
+        )
+
+    #####################################################
+    # PERSON SHAREHOLDING
+    #####################################################
+
+    if any(
+        x in q
+        for x in [
+            "which companies does",
+            "shareholding",
+            "owns"
+        ]
+    ):
+
+        return build_result(
+            intent=
+                "person_shareholding"
+        )
+
+    #####################################################
+    # AUDITOR
+    #####################################################
+
+    if (
+        "auditor"
+        in q
+        or "audited by"
+        in q
+    ):
+
+        return build_result(
+            intent="auditor"
+        )
+
+    #####################################################
+    # COMPANY PROFILE
+    #####################################################
+
+    if any(
+        x in q
+        for x in [
+            "company profile",
+            "registration number",
+            "company information",
+            "incorporated",
+            "company details"
+        ]
+    ):
+
+        return build_result(
+            intent="company"
+        )
+
+    return None
+
+
+#########################################################
+# LLM FALLBACK
+#########################################################
+
+def llm_route(question):
+
+    prompt = f"""
+Classify this question.
+
+Possible intents:
+
+director
+shareholder
+beneficial_owner
+company
+person_directorship
+person_shareholding
+auditor
+knowledge
+greeting
+
+Return ONLY JSON.
+
+Schema:
+
+{{
+    "intent":"",
+    "company":"",
+    "person":""
+}}
+
+Question:
+
+{question}
+"""
+
+    response = (
+        router_llm.invoke(
+            prompt
+        ).content
+    )
+
+    print(
+        "\nROUTER RAW:"
+    )
+
+    print(response)
+
+    response = (
+        response
+        .replace(
+            "```json",
+            ""
+        )
+        .replace(
+            "```",
+            ""
+        )
+        .replace(
+            "<think>",
+            ""
+        )
+        .replace(
+            "</think>",
+            ""
+        )
+        .strip()
+    )
+
+    match = re.search(
+        r"\{.*\}",
+        response,
+        re.S
+    )
+
+    if not match:
+
+        raise Exception(
+            "No JSON found"
+        )
+
+    data = json.loads(
+        match.group()
+    )
+
+    return build_result(
+
+        intent=
+            data.get(
+                "intent",
+                "knowledge"
+            ),
+
+        company=
+            data.get(
+                "company",
+                ""
+            ),
+
+        person=
+            data.get(
+                "person",
+                ""
+            )
+    )
+
+
+#########################################################
+# MAIN ROUTER
+#########################################################
+
+def route(question):
+
+    #####################################################
+    # RULE FIRST
+    #####################################################
+
+    result = rule_route(
+        question
+    )
+
+    if result:
+
+        print(
+            "Rule Router:",
+            result
+        )
+
+        return result
+
+    #####################################################
+    # FALLBACK LLM
+    #####################################################
+
+    try:
+
+        result = llm_route(
+            question
+        )
+
+        print(
+            "LLM Router:",
+            result
+        )
+
+        return result
+
+    except Exception as e:
+
+        print(
+            "Router Error:",
+            str(e)
+        )
+
+        return build_result(
+            intent="knowledge"
+        )

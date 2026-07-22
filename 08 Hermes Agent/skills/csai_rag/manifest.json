@@ -1,0 +1,26 @@
+{
+  "name": "csai_rag",
+  "description": "Malaysian Company Secretary AI Skill",
+  "entrypoint": "run.py",
+
+  "triggers": [
+    "director",
+    "directors",
+    "shareholder",
+    "shareholders",
+    "beneficial owner",
+    "beneficial ownership",
+    "company profile",
+    "company information",
+    "company details",
+    "company registration",
+    "appointed as director",
+    "appointed as shareholder",
+    "auditor",
+    "corporate registry",
+    "malaysian company",
+    "ssm",
+    "ebos",
+    "company secretary"
+  ]
+}
