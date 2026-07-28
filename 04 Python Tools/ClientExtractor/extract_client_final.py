@@ -520,7 +520,7 @@ def extract_members_section51(text):
     #
 
     chunks = re.split(
-        r'(\d[\d,]*\s+\d[\d,]*\s+\d[\d,]*\s+\d{2}/\d{2}/\d{4})',
+        r'(\d[\d,]*[ \t]+\d[\d,]*[ \t]+\d[\d,]*[ \t]+\d[\d,]*(?:[ \t]+\d{2}/\d{2}/\d{4})?)',
         block
     )
 
@@ -533,13 +533,14 @@ def extract_members_section51(text):
             continue
 
         #
-        # Extract date from data_line
+        # Extract optional trailing date, remove it before number parsing
         #
 
-        date_m = re.search(r'(\d{2}/\d{2}/\d{4})', data_line)
-        if not date_m:
-            continue
-        member_date = date_m.group(1)
+        member_date = ""
+        date_m = re.search(r'(\d{2}/\d{2}/\d{4})\s*$', data_line)
+        if date_m:
+            member_date = date_m.group(1)
+            data_line = data_line[:date_m.start()].strip()
 
         #
         # Parse preceding block for IC, Name, Address, Shares
@@ -576,13 +577,22 @@ def extract_members_section51(text):
         address = clean(" ".join(address_lines))
 
         #
-        # Extract shares numbers from data_line
+        # Extract shares numbers from data_line (date already removed)
         #
 
         nums = re.findall(r"[\d,]+", data_line)
-        shares_total = nums[-2] if len(nums) >= 2 else ""
-        shares_in = nums[-4] if len(nums) >= 4 else ""
-        shares_out = nums[-3] if len(nums) >= 3 else ""
+        # 4 nums: [Number_of_Shares, Transferred_In, Transferred_Out, Total_Final]
+        # 3 nums (fallback): [Transferred_In, Transferred_Out, Total_Final]
+        if len(nums) >= 4:
+            shares_total = nums[3]
+            shares_in = nums[1]
+            shares_out = nums[2]
+        elif len(nums) >= 3:
+            shares_total = nums[2]
+            shares_in = nums[0]
+            shares_out = nums[1]
+        else:
+            continue
 
         # Remove commas from numbers
         shares_total = shares_total.replace(",", "")
@@ -1256,11 +1266,15 @@ def find_section14(folder):
     best_has_regno = False
 
     for pdf in folder.rglob("*.pdf"):
-        name = pdf.name.lower()
-        if "section 14" not in name and "sec14" not in name:
-            continue
         text = read_pdf(pdf)
-        if "APPLICATION FOR REGISTRATION OF A COMPANY" not in text.upper():
+        is_section14 = (
+            "APPLICATION FOR REGISTRATION OF A COMPANY" in text.upper()
+            or (
+                bool(re.search(r'Section\s*14', text, re.I))
+                and "PARTICULARS OF COMPANY" in text.upper()
+            )
+        )
+        if not is_section14:
             continue
         has_regno = bool(re.search(r'Registration No\.', text, re.I))
         if has_regno and not best_has_regno:
@@ -1452,23 +1466,98 @@ def latest_section68(folder):
 rows = []
 
 for folder in sorted(CLIENT_ROOT.iterdir()):
-
     if not folder.is_dir():
         continue
-
     print("Processing :", folder.name)
 
     pdf68 = latest_section68(folder)
+    pdf14 = None
+    text14 = None
+    base_dt = None
 
-    if not pdf68:
+    if pdf68:
+        text68 = read_pdf(pdf68)
+        s68_ar_date_str = annual_return_date(text68)
+        base_dt = parse_date(s68_ar_date_str) if s68_ar_date_str else None
+
+        row = {}
+        row["Folder"] = folder.name
+        row["Company Name"] = company_name(text68)
+        row["Reg No"] = reg_no(text68)
+        row["Annual Return Date"] = s68_ar_date_str or ""
+        row["Total Issued Shares"] = ""
+        row["Date of Lodgement"] = extract_submission_date(text68)
+        row["Business Address"] = business_address(text68)
+        row["Financial Record Address"] = financial_address(text68)
+
+        directors = list(extract_directors(text68))
+        members = list(extract_members(text68))
+        total_shares = ""
+
+        for s58_pdf, s58_text, s58_date_str, s58_dt in find_all_section58(folder):
+            if base_dt and s58_dt and s58_dt <= base_dt:
+                continue
+            for nd in extract_directors_section58(s58_text):
+                app_date = nd.get("Appointment Date", "")
+                app_dt = parse_date(app_date) if app_date else None
+                if app_dt and (base_dt is None or app_dt > base_dt):
+                    ic58 = nd.get("IC", "")
+                    if not any(d.get("IC", "") == ic58 for d in directors):
+                        directors.append(nd)
+            cess = extract_cessation_section58(s58_text)
+            if cess:
+                cess_date = cess.get("Date of Cessation", "")
+                cess_dt = parse_date(cess_date) if cess_date else None
+                if cess_dt and (base_dt is None or cess_dt > base_dt):
+                    ic58 = cess.get("IC", "")
+                    name58 = cess.get("Name", "").strip().upper()
+                    directors = [
+                        d for d in directors
+                        if not (d.get("IC", "") == ic58 and d.get("Name", "").upper() == name58)
+                    ]
+
+        pdf51 = find_latest_section51(folder)
+        if pdf51:
+            text51 = read_pdf(pdf51)
+            members_51 = extract_members_section51(text51)
+            s51_dates = [parse_date(m.get("Date", "")) for m in members_51 if m.get("Date")]
+            s51_latest = max(s51_dates) if s51_dates else None
+            if s51_dates and (base_dt is None or s51_latest >= base_dt):
+                print(f"  Using Section51 (date {s51_latest})")
+                members = []
+                for m in members_51:
+                    members.append({
+                        "Type": "INDIVIDUAL",
+                        "Name": m.get("Name", ""),
+                        "ID Type": "MYKAD",
+                        "ID No": m.get("IC", ""),
+                        "Nationality": m.get("Nationality", ""),
+                        "Race": m.get("Race", ""),
+                        "Gender": "",
+                        "DOB": "",
+                        "Address": m.get("Address", ""),
+                        "Shares": m.get("Shares", ""),
+                        "Share Type": "ORDINARY SHARES",
+                        "Analysis": "",
+                        "Transferred In": m.get("Transferred In", ""),
+                        "Transferred Out": m.get("Transferred Out", ""),
+                        "Member Date": m.get("Date", ""),
+                    })
+                total_shares = extract_total_shares_s51(text51)
+
+        row["Total Issued Shares"] = total_shares or extract_total_shares(text68)
+
+        pdf14, text14 = find_section14(folder)
+        if text14:
+            row["Incorporate Date"] = extract_incorporation_date(text14) or ""
+
+    elif not pdf68:
         pdf14, text14 = find_section14(folder)
         if not pdf14:
             print("  No Section68 or Section14 found.")
             continue
 
         print(f"  Using Section14 ({pdf14.name})")
-        s68_ar_date_str = ""
-        ar_dt = None
 
         co = extract_company_section14(text14)
         row = {}
@@ -1477,100 +1566,82 @@ for folder in sorted(CLIENT_ROOT.iterdir()):
         row["Reg No"] = co["reg_no"]
         inc_date = extract_incorporation_date(text14)
         inc_dt = parse_date(inc_date) if inc_date else None
+        row["Incorporate Date"] = inc_date or ""
         row["Annual Return Date"] = ""
+        base_dt = inc_dt
         if inc_dt:
             try:
-                ar_dt = inc_dt.replace(year=inc_dt.year + 1)
-                row["Annual Return Date"] = ar_dt.strftime("%d/%m/%Y")
+                ar_dt_calc = inc_dt.replace(year=inc_dt.year + 1)
+                row["Annual Return Date"] = ar_dt_calc.strftime("%d/%m/%Y")
             except ValueError:
-                pass  # Feb 29 edge case
+                pass
         row["Total Issued Shares"] = extract_total_shares_section14(text14)
-        row["Date of Lodgement section 68"] = extract_submission_date(text14)
+        row["Date of Lodgement"] = extract_submission_date(text14)
         row["Business Address"] = co["business_address"]
         row["Financial Record Address"] = co["registered_address"]
 
-        directors = extract_directors_section14(text14)
-        for i, d in enumerate(directors, start=1):
-            row[f"Director{i} Name"] = d.get("Name", "")
-            row[f"Director{i} IC"] = d.get("IC", "")
-            row[f"Director{i} DOB"] = d.get("DOB", "")
-            row[f"Director{i} Nationality"] = d.get("Nationality", "")
-            row[f"Director{i} Race"] = d.get("Race", "")
-            row[f"Director{i} Gender"] = ""
-            row[f"Director{i} Residential Address"] = d.get("Residential", "")
-            row[f"Director{i} Service Address"] = d.get("Service Address", "")
-
-        members_68 = extract_members_section14(text14)
-        for m in members_68:
+        directors = list(extract_directors_section14(text14))
+        members = list(extract_members_section14(text14))
+        for m in members:
             m["Type"] = "INDIVIDUAL"
             m["Gender"] = ""
             m["Analysis"] = ""
             if not m.get("ID Type"):
                 m["ID Type"] = "MYKAD"
 
-        row["_members"] = members_68
-        rows.append(row)
-        continue
+        for s58_pdf, s58_text, s58_date_str, s58_dt in find_all_section58(folder):
+            if base_dt and s58_dt and s58_dt <= base_dt:
+                continue
+            for nd in extract_directors_section58(s58_text):
+                app_date = nd.get("Appointment Date", "")
+                app_dt = parse_date(app_date) if app_date else None
+                if app_dt and (base_dt is None or app_dt > base_dt):
+                    ic58 = nd.get("IC", "")
+                    if not any(d.get("IC", "") == ic58 for d in directors):
+                        directors.append(nd)
+            cess = extract_cessation_section58(s58_text)
+            if cess:
+                cess_date = cess.get("Date of Cessation", "")
+                cess_dt = parse_date(cess_date) if cess_date else None
+                if cess_dt and (base_dt is None or cess_dt > base_dt):
+                    ic58 = cess.get("IC", "")
+                    name58 = cess.get("Name", "").strip().upper()
+                    directors = [
+                        d for d in directors
+                        if not (d.get("IC", "") == ic58 and d.get("Name", "").upper() == name58)
+                    ]
 
-    text68 = read_pdf(pdf68)
-
-    # Use Annual Return Date as comparison base
-    s68_ar_date_str = annual_return_date(text68)  # DD/MM/YYYY format
-    ar_dt = parse_date(s68_ar_date_str) if s68_ar_date_str else None
-
-    row = {}
-
-    row["Folder"] = folder.name
-    row["Company Name"] = company_name(text68)
-    row["Reg No"] = reg_no(text68)
-    row["Annual Return Date"] = s68_ar_date_str or ""
-    row["Total Issued Shares"] = ""  # placeholder, filled after member decision
-    row["Date of Lodgement section 68"] = extract_submission_date(text68)
-    row["Business Address"] = business_address(text68)
-    row["Financial Record Address"] = financial_address(text68)
-
-    # --- Directors: S68 base + ALL S58 modifications ---
-    directors_68 = extract_directors(text68)
-    directors = list(directors_68)
-
-    all_s58 = find_all_section58(folder)
-
-    for s58_pdf, s58_text, s58_date_str, s58_dt in all_s58:
-        if ar_dt and s58_dt and s58_dt <= ar_dt:
-            continue  # skip if not newer than Annual Return Date
-
-        # Section B: New Director
-        new_dirs = extract_directors_section58(s58_text)
-        for nd in new_dirs:
-            app_date = nd.get("Appointment Date", "")
-            app_dt = parse_date(app_date) if app_date else None
-            if ar_dt and app_dt and app_dt > ar_dt:
-                ic58 = nd.get("IC", "")
-                if not any(d.get("IC", "") == ic58 for d in directors):
-                    directors.append({
-                        "Name": nd.get("Name", ""),
-                        "IC": ic58,
-                        "Nationality": nd.get("Nationality", ""),
-                        "Race": nd.get("Race", ""),
-                        "Gender": nd.get("Gender", ""),
-                        "DOB": nd.get("DOB", ""),
-                        "Residential": nd.get("Residential", ""),
-                        "Appointment Date": app_date,
-                        "Service Address": "",
+        pdf51 = find_latest_section51(folder)
+        if pdf51:
+            text51 = read_pdf(pdf51)
+            members_51 = extract_members_section51(text51)
+            s51_dates = [parse_date(m.get("Date", "")) for m in members_51 if m.get("Date")]
+            s51_latest = max(s51_dates) if s51_dates else None
+            if s51_dates and (base_dt is None or s51_latest >= base_dt):
+                print(f"  Using Section51 (date {s51_latest})")
+                members = []
+                for m in members_51:
+                    members.append({
+                        "Type": "INDIVIDUAL",
+                        "Name": m.get("Name", ""),
+                        "ID Type": "MYKAD",
+                        "ID No": m.get("IC", ""),
+                        "Nationality": m.get("Nationality", ""),
+                        "Race": m.get("Race", ""),
+                        "Gender": "",
+                        "DOB": "",
+                        "Address": m.get("Address", ""),
+                        "Shares": m.get("Shares", ""),
+                        "Share Type": "ORDINARY SHARES",
+                        "Analysis": "",
+                        "Transferred In": m.get("Transferred In", ""),
+                        "Transferred Out": m.get("Transferred Out", ""),
+                        "Member Date": m.get("Date", ""),
                     })
+                row["Total Issued Shares"] = extract_total_shares_s51(text51) or row["Total Issued Shares"]
 
-        # Section C: Cessation of Director
-        cess = extract_cessation_section58(s58_text)
-        if cess:
-            cess_date = cess.get("Date of Cessation", "")
-            cess_dt = parse_date(cess_date) if cess_date else None
-            if ar_dt and cess_dt and cess_dt > ar_dt:
-                ic58 = cess.get("IC", "")
-                name58 = cess.get("Name", "").strip().upper()
-                directors = [
-                    d for d in directors
-                    if not (d.get("IC", "") == ic58 and d.get("Name", "").upper() == name58)
-                ]
+    else:
+        continue
 
     for i, d in enumerate(directors, start=1):
         row[f"Director{i} Name"] = d.get("Name", "")
@@ -1582,60 +1653,7 @@ for folder in sorted(CLIENT_ROOT.iterdir()):
         row[f"Director{i} Residential Address"] = d.get("Residential", "")
         row[f"Director{i} Service Address"] = d.get("Service Address", "")
 
-    # --- Members: Section 68 vs Section 51 ---
-    members_68 = extract_members(text68)
-    members_51 = []
-
-    pdf51 = find_latest_section51(folder)
-
-    if pdf51:
-        text51 = read_pdf(pdf51)
-        s51_date = extract_ref_date(text51)
-        members_51 = extract_members_section51(text51)
-
-        s51_dates = [
-            parse_date(m.get("Date", ""))
-            for m in members_51
-            if m.get("Date")
-        ]
-        s51_latest = max(s51_dates) if s51_dates else None
-
-        use_s51 = (
-            s51_latest is not None
-            and (ar_dt is None or s51_latest >= ar_dt)
-        )
-
-        if use_s51:
-            print(f"  Using Section51 (date {s51_latest})")
-            members_68 = []
-            for m in members_51:
-                members_68.append({
-                    "Type": "INDIVIDUAL",
-                    "Name": m.get("Name", ""),
-                    "ID Type": "MYKAD",
-                    "ID No": m.get("IC", ""),
-                    "Nationality": m.get("Nationality", ""),
-                    "Race": m.get("Race", ""),
-                    "Gender": "",
-                    "DOB": "",
-                    "Address": m.get("Address", ""),
-                    "Shares": m.get("Shares", ""),
-                    "Share Type": "ORDINARY SHARES",
-                    "Analysis": "",
-                    "Transferred In": m.get("Transferred In", ""),
-                    "Transferred Out": m.get("Transferred Out", ""),
-                    "Member Date": m.get("Date", ""),
-                })
-
-    # Total shares: from whichever source we used for members
-    if pdf51 and use_s51:
-        total_shares = extract_total_shares_s51(text51)
-    else:
-        total_shares = extract_total_shares(text68)
-    row["Total Issued Shares"] = total_shares
-
-    row["_members"] = members_68
-
+    row["_members"] = members
     rows.append(row)
 
 
