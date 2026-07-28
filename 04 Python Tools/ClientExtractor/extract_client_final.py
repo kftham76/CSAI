@@ -6,8 +6,17 @@ import warnings
 from datetime import datetime
 import sqlite3
 
-# Suppress pypdf warnings about duplicate /Info keys in source PDFs
-warnings.filterwarnings("ignore", category=UserWarning, module="pypdf")
+# Optional OCR support for scanned PDFs
+try:
+    import pytesseract
+    from pdf2image import convert_from_path
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
+
+# Suppress pypdf warnings (multiple categories emitted by pypdf internals)
+warnings.filterwarnings("ignore", module="pypdf")
+warnings.filterwarnings("ignore", category=UserWarning)
 
 CLIENT_ROOT = Path(r"D:\CSAI_CLIENTS")
 OUTPUT_FILE = Path(
@@ -21,10 +30,17 @@ DB_DIR = Path(r"C:\CSAI_OS\04 Python Tools\DB")
 ####################################################
 
 def read_pdf(pdf):
+    """Read PDF text, suppressing pypdf's stderr noise from C extension."""
 
     text = ""
 
     try:
+        # Redirect stderr to devnull to suppress pypdf's C-level warnings
+        import os
+        old_stderr = os.dup(2)
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, 2)
+        os.close(devnull)
 
         reader = PdfReader(pdf)
 
@@ -35,10 +51,21 @@ def read_pdf(pdf):
             if t:
                 text += "\n" + t
 
+        # Restore stderr
+        os.dup2(old_stderr, 2)
+        os.close(old_stderr)
+
     except Exception as e:
 
         print("PDF ERROR :", pdf)
         print(e)
+
+        # Ensure stderr restored even on error
+        try:
+            os.dup2(old_stderr, 2)
+            os.close(old_stderr)
+        except:
+            pass
 
     # Normalize non-breaking spaces — PdfReader emits \xa0, but Python \s
     # does not match \xa0, breaking regex patterns.
@@ -61,6 +88,7 @@ def clean(text):
     out = []
     for line in lines:
         line = re.sub(r"\s+", " ", line).strip()
+        line = line.replace("\xad", "")  # remove soft hyphens
         if not line:
             continue
 
@@ -459,10 +487,12 @@ def find_all_section58(folder):
 ####################################################
 
 def find_latest_section51(folder):
-    """Find the latest Section 51 (Register of Members) PDF in folder."""
+    """Find the latest Section 51 (Register of Members) PDF in folder.
+    Returns (pdf_path, date_str, date_dt) or (None, None, None)."""
 
     latest_pdf = None
-    latest_date = None
+    latest_dt = None
+    latest_str = ""
 
     for pdf in folder.rglob("*.pdf"):
 
@@ -486,11 +516,12 @@ def find_latest_section51(folder):
         if not dt:
             continue
 
-        if latest_date is None or dt > latest_date:
-            latest_date = dt
+        if latest_dt is None or dt > latest_dt:
+            latest_dt = dt
+            latest_str = d
             latest_pdf = pdf
 
-    return latest_pdf
+    return latest_pdf, latest_str, latest_dt
 
 
 def extract_members_section51(text):
@@ -515,7 +546,7 @@ def extract_members_section51(text):
     block = m.group(1)
 
     #
-    # Split by dates: each member record ends with a date
+    # Split by share data lines: each member record ends with share numbers
     # Pattern: "shares_in shares_out total_shares date"
     #
 
@@ -543,7 +574,10 @@ def extract_members_section51(text):
             data_line = data_line[:date_m.start()].strip()
 
         #
-        # Parse preceding block for IC, Name, Address, Shares
+        # Parse preceding block for ID, Name, Address
+        # PDF text often splits every word into its own line, so
+        # we collect all non-header lines into one text block then
+        # detect the boundary between name and address.
         #
 
         lines = [
@@ -551,30 +585,169 @@ def extract_members_section51(text):
             if l.strip()
         ]
 
-        #
-        # IC: first line containing 12 digits (may have spaces)
-        #
+        member_id = ""
 
-        ic = ""
-        name = ""
-        address_lines = []
+        #
+        # Header keywords: skip these during ID detection
+        #
+        header_keywords = [
+            "IDENTIFICATION", "SHAREHOLDERS", "NAME", "ADDRESS",
+            "NUMBER OF", "TRANSFER", "CESSATION", "UPDATE",
+            "PROFILE", "TOTAL", "FINAL", "SHARES", "DATE OF",
+            "PARTICULAR", "NO OF"
+        ]
 
+        #
+        # Pre-process: merge lines connected by soft hyphen (\xad).
+        # PDF text extraction splits "870721‑02‑5451" as "870721‑02‑\n5451".
+        #
+        merged_lines = []
+        carry = ""
         for line in lines:
-            digits = re.sub(r"[\s\xad]", "", line)
-            if re.match(r"^\d{12}$", digits) and not ic:
-                ic = digits
-            elif not ic:
+            if carry:
+                line = carry + line
+                carry = ""
+            if line.rstrip().endswith("\xad"):
+                carry = line.rstrip()  # keep trailing \xad, will merge with next
                 continue
-            else:
-                if not name:
-                    name = clean(line)
-                else:
-                    address_lines.append(line)
+            merged_lines.append(line)
+        if carry:
+            merged_lines.append(carry)
+        lines = merged_lines
 
-        if not ic or not name:
+        # Phase 1: scan lines to find the ID (skip headers).
+        # Records (id_index, id_line_remainder) so Phase 2 can use
+        # the original lines list without destructive modification.
+        id_index = -1
+        id_line_remainder = ""
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            upper = stripped.upper()
+
+            # Skip header rows
+            if any(hw in upper for hw in header_keywords):
+                continue
+
+            # Skip lines that are just punctuation/numbers (reference noise)
+            if re.match(r'^[\d\s\-\.\,\#\/\(\)]+$', stripped) and len(stripped) < 8:
+                continue
+
+            words = stripped.split()
+            condensed = re.sub(r"[\s\xad]", "", stripped)
+            word_count = len(words)
+
+            if word_count == 1:
+                # Single word — try whole-line ID patterns
+
+                # --- Pattern A: 12-digit IC ---
+                if re.match(r'^\d{12}$', condensed):
+                    member_id = condensed
+                    id_index = idx
+                    break
+
+                # --- Pattern B: pure digits, 6+ chars (passport number) ---
+                if re.match(r'^\d{6,20}$', condensed):
+                    member_id = condensed
+                    id_index = idx
+                    break
+
+                # --- Pattern C: alphanumeric ID ---
+                if re.match(r'^[\dA-Z\-]{4,30}$', condensed) and re.search(r'\d', condensed):
+                    member_id = condensed
+                    id_index = idx
+                    break
+            else:
+                # Multi-word — try Pattern D: first word is ID, rest is name
+                first_condensed = re.sub(r"[\s\xad]", "", words[0])
+                if re.match(r'^[\dA-Za-z\-]{4,20}$', first_condensed) and re.search(r'\d', first_condensed):
+                    member_id = first_condensed
+                    id_index = idx
+                    id_line_remainder = " ".join(words[1:])
+                    break
+
+        if not member_id or id_index < 0:
             continue
 
-        address = clean(" ".join(address_lines))
+        #
+        # Phase 2: collect all text AFTER the ID line onward
+        #
+        info_lines = []
+        if id_line_remainder:
+            info_lines.append(id_line_remainder)
+        for line in lines[id_index + 1:]:
+            stripped = line.strip()
+            info_lines.append(stripped)
+
+        if not info_lines:
+            continue
+
+        info_text = " ".join(info_lines)
+
+        #
+        # Phase 3: split name from address in info_text
+        # Strategy: detect where address starts by looking for
+        # address markers (postcode, street prefixes, country)
+        #
+
+        # Try splitting at company suffix first
+        # (everything after "SDN. BHD." / "BHD." / "LTD." is address)
+        company_suffixes = [
+            r'SDN\.?\s*BHD\.?',
+            r'SDN\.?\s*BHD',
+            r'BHD\.?',
+            r'LTD\.?',
+            r'LIMITED',
+            r'INC\.?',
+            r'CORPORATION',
+            r'CO\.?\s*LTD\.?',
+            r'PLC',
+        ]
+
+        name_end = len(info_text)
+        for suf in company_suffixes:
+            m = re.search(suf, info_text, re.I)
+            if m:
+                end_pos = m.end()
+                # If there's more text after the suffix, split there
+                if end_pos < len(info_text):
+                    name_end = end_pos
+                    break
+
+        # If we found a company suffix, split name = text up to suffix end
+        if name_end < len(info_text):
+            name = clean(info_text[:name_end])
+            address = clean(info_text[name_end:])
+        else:
+            # No company suffix — look for address indicators
+            # Street/location prefixes that mark address start
+            addr_starters = re.compile(
+                r'\b(NO\.?\s+|LOT\s+|UNIT\s+|'
+                r'JALAN\s+|LORONG\s+|PERSIARAN\s+|BANDAR\s+|'
+                r'TAMAN\s+|KAMPUNG\s+|BUKIT\s+|LEBUH\s+|'
+                r'DESA\s+|SUNGAI\s+|PULAU\s+|BATU\s+|'
+                r'MUKIM\s+|DAERAH\s+|NEGERI\s+|'
+                r'BLK\s+|BLOK\s+)',
+                re.I
+            )
+            m = addr_starters.search(info_text)
+            if m and m.start() > 3:  # address marker not at very start
+                name = clean(info_text[:m.start()])
+                address = clean(info_text[m.start():])
+            else:
+                # Fallback: split at postcode (5 digits)
+                m = re.search(r'\b\d{5}\b', info_text)
+                if m and m.start() > 3:
+                    name = clean(info_text[:m.start()])
+                    address = clean(info_text[m.start():])
+                else:
+                    # Last resort: everything except trailing country name
+                    m = re.search(r'\b(MALAYSIA|SINGAPORE|TAIWAN|INDIA|CHINA)\s*$', info_text, re.I)
+                    if m and m.start() > 3:
+                        name = clean(info_text[:m.start()])
+                        address = clean(info_text[m.start():])
+                    else:
+                        name = clean(info_text)
+                        address = ""
 
         #
         # Extract shares numbers from data_line (date already removed)
@@ -609,8 +782,21 @@ def extract_members_section51(text):
         if "MALAYSIA" in address.upper():
             nationality = "MALAYSIA"
 
+        #
+        # Detect corporate member type from name suffix
+        #
+
+        member_type = "INDIVIDUAL"
+        name_upper = name.upper()
+        if any(s in name_upper for s in [
+            "SDN. BHD.", "SDN BHD", "SDN.BHD.", "BHD.",
+            "LTD.", "PLC", "INC.", "LIMITED", "CORPORATION",
+            "CO. LTD", "CO LTD", "COMPANY", "HOLDINGS",
+        ]):
+            member_type = "COMPANY"
+
         members.append({
-            "IC": ic,
+            "IC": member_id,
             "Name": name,
             "Address": address,
             "Shares": shares_total,
@@ -619,6 +805,7 @@ def extract_members_section51(text):
             "Date": member_date,
             "Nationality": nationality,
             "Race": race,
+            "Type": member_type,
         })
 
     return members
@@ -1267,6 +1454,11 @@ def find_section14(folder):
 
     for pdf in folder.rglob("*.pdf"):
         text = read_pdf(pdf)
+        # If text is empty, try OCR (scanned PDFs)
+        if not text.strip() and OCR_AVAILABLE:
+            text = try_ocr_pdf(pdf)
+            if text.strip():
+                print(f"  OCR used for {pdf.name}")
         is_section14 = (
             "APPLICATION FOR REGISTRATION OF A COMPANY" in text.upper()
             or (
@@ -1412,6 +1604,66 @@ def extract_incorporation_date(text):
     return ""
 
 
+def try_ocr_pdf(pdf_path):
+    """Attempt OCR on scanned PDF when text extraction yields nothing.
+    Returns text or empty string."""
+    if not OCR_AVAILABLE:
+        return ""
+    try:
+        images = convert_from_path(str(pdf_path))
+        text_parts = []
+        for img in images:
+            t = pytesseract.image_to_string(img)
+            if t:
+                text_parts.append(t)
+        return "\n".join(text_parts)
+    except Exception as e:
+        print(f"  OCR failed for {pdf_path.name}: {e}")
+        return ""
+
+
+def find_section27_new_name(folder):
+    """Find Section 27 (Change of Company Name) PDF and return new name."""
+    for pdf in folder.rglob("*.pdf"):
+        name = pdf.name.lower()
+        if "section 27" not in name and "sec27" not in name:
+            continue
+        text = read_pdf(pdf)
+        if "CHANGE OF NAME" not in text.upper() and "CHANGE OF COMPANY NAME" not in text.upper():
+            continue
+        # Try various patterns for new name
+        for pat in [
+            r'New\s+name\s+(.+?)(?:\n|$)',
+            r'New\s+Company\s+Name\s+(.+?)(?:\n|$)',
+            r'Name\s+of\s+Company\s+(.+?)(?:\n|$)',
+        ]:
+            m = re.search(pat, text, re.I)
+            if m:
+                new_name = clean(m.group(1))
+                if new_name:
+                    return new_name
+    return ""
+
+
+def find_incorporation_date_in_folder(folder):
+    """Fallback: search key PDFs in folder for Incorporation Date.
+    Only checks S14, S17, S51, S58 PDFs (most likely to contain incorporation info)."""
+    for pdf in sorted(folder.rglob("*.pdf")):
+        name = pdf.name.lower()
+        if not any(kw in name for kw in ["section 14", "section 17", "section 51", "section 58",
+                                           "sec14", "sec17", "sec51", "sec58",
+                                           "superform 14"]):
+            continue
+        text = read_pdf(pdf)
+        if not text.strip():
+            text = try_ocr_pdf(pdf)
+        if text:
+            d = extract_incorporation_date(text)
+            if d:
+                return d
+    return ""
+
+
 ####################################################
 # LATEST SECTION68
 ####################################################
@@ -1463,291 +1715,315 @@ def latest_section68(folder):
 # MAIN
 ####################################################
 
-rows = []
+if __name__ == "__main__":
 
-for folder in sorted(CLIENT_ROOT.iterdir()):
-    if not folder.is_dir():
-        continue
-    print("Processing :", folder.name)
+    rows = []
 
-    pdf68 = latest_section68(folder)
-    pdf14 = None
-    text14 = None
-    base_dt = None
-
-    if pdf68:
-        text68 = read_pdf(pdf68)
-        s68_ar_date_str = annual_return_date(text68)
-        base_dt = parse_date(s68_ar_date_str) if s68_ar_date_str else None
-
-        row = {}
-        row["Folder"] = folder.name
-        row["Company Name"] = company_name(text68)
-        row["Reg No"] = reg_no(text68)
-        row["Annual Return Date"] = s68_ar_date_str or ""
-        row["Incorporate Date"] = ""
-        row["Total Issued Shares"] = ""
-        row["Date of Lodgement"] = extract_submission_date(text68)
-        row["Business Address"] = business_address(text68)
-        row["Financial Record Address"] = financial_address(text68)
-
-        directors = list(extract_directors(text68))
-        members = list(extract_members(text68))
-        total_shares = ""
-
-        for s58_pdf, s58_text, s58_date_str, s58_dt in find_all_section58(folder):
-            if base_dt and s58_dt and s58_dt <= base_dt:
-                continue
-            for nd in extract_directors_section58(s58_text):
-                app_date = nd.get("Appointment Date", "")
-                app_dt = parse_date(app_date) if app_date else None
-                if app_dt and (base_dt is None or app_dt > base_dt):
-                    ic58 = nd.get("IC", "")
-                    if not any(d.get("IC", "") == ic58 for d in directors):
-                        directors.append(nd)
-            cess = extract_cessation_section58(s58_text)
-            if cess:
-                cess_date = cess.get("Date of Cessation", "")
-                cess_dt = parse_date(cess_date) if cess_date else None
-                if cess_dt and (base_dt is None or cess_dt > base_dt):
-                    ic58 = cess.get("IC", "")
-                    name58 = cess.get("Name", "").strip().upper()
-                    directors = [
-                        d for d in directors
-                        if not (d.get("IC", "") == ic58 and d.get("Name", "").upper() == name58)
-                    ]
-
-        pdf51 = find_latest_section51(folder)
-        if pdf51:
-            text51 = read_pdf(pdf51)
-            members_51 = extract_members_section51(text51)
-            s51_dates = [parse_date(m.get("Date", "")) for m in members_51 if m.get("Date")]
-            s51_latest = max(s51_dates) if s51_dates else None
-            if s51_dates and (base_dt is None or s51_latest >= base_dt):
-                print(f"  Using Section51 (date {s51_latest})")
-                members = []
-                for m in members_51:
-                    members.append({
-                        "Type": "INDIVIDUAL",
-                        "Name": m.get("Name", ""),
-                        "ID Type": "MYKAD",
-                        "ID No": m.get("IC", ""),
-                        "Nationality": m.get("Nationality", ""),
-                        "Race": m.get("Race", ""),
-                        "Gender": "",
-                        "DOB": "",
-                        "Address": m.get("Address", ""),
-                        "Shares": m.get("Shares", ""),
-                        "Share Type": "ORDINARY SHARES",
-                        "Analysis": "",
-                        "Transferred In": m.get("Transferred In", ""),
-                        "Transferred Out": m.get("Transferred Out", ""),
-                        "Member Date": m.get("Date", ""),
-                    })
-                total_shares = extract_total_shares_s51(text51)
-
-        row["Total Issued Shares"] = total_shares or extract_total_shares(text68)
-
-        pdf14, text14 = find_section14(folder)
-        if text14:
-            row["Incorporate Date"] = extract_incorporation_date(text14) or ""
-
-    elif not pdf68:
-        pdf14, text14 = find_section14(folder)
-        if not pdf14:
-            print("  No Section68 or Section14 found.")
+    for folder in sorted(CLIENT_ROOT.iterdir()):
+        if not folder.is_dir():
             continue
+        print("Processing :", folder.name)
 
-        print(f"  Using Section14 ({pdf14.name})")
+        pdf68 = latest_section68(folder)
+        pdf14 = None
+        text14 = None
+        base_dt = None
 
-        co = extract_company_section14(text14)
-        row = {}
-        row["Folder"] = folder.name
-        row["Company Name"] = co["name"]
-        row["Reg No"] = co["reg_no"]
-        inc_date = extract_incorporation_date(text14)
-        inc_dt = parse_date(inc_date) if inc_date else None
-        row["Annual Return Date"] = ""
-        row["Incorporate Date"] = inc_date or ""
-        base_dt = inc_dt
-        if inc_dt:
-            try:
-                ar_dt_calc = inc_dt.replace(year=inc_dt.year + 1)
-                row["Annual Return Date"] = ar_dt_calc.strftime("%d/%m/%Y")
-            except ValueError:
-                pass
-        row["Total Issued Shares"] = extract_total_shares_section14(text14)
-        row["Date of Lodgement"] = extract_submission_date(text14)
-        row["Business Address"] = co["business_address"]
-        row["Financial Record Address"] = co["registered_address"]
+        if pdf68:
+            text68 = read_pdf(pdf68)
+            s68_ar_date_str = annual_return_date(text68)
+            base_dt = parse_date(s68_ar_date_str) if s68_ar_date_str else None
 
-        directors = list(extract_directors_section14(text14))
-        members = list(extract_members_section14(text14))
-        for m in members:
-            m["Type"] = "INDIVIDUAL"
-            m["Gender"] = ""
-            m["Analysis"] = ""
-            if not m.get("ID Type"):
-                m["ID Type"] = "MYKAD"
+            row = {}
+            row["Folder"] = folder.name
+            co_name = company_name(text68)
+            # Check Section 27 name change
+            s27_name = find_section27_new_name(folder)
+            if s27_name:
+                print(f"  Section27 name: {co_name} → {s27_name}")
+                co_name = s27_name
+            row["Company Name"] = co_name
+            row["Reg No"] = reg_no(text68)
+            row["Annual Return Date"] = s68_ar_date_str or ""
+            row["Incorporate Date"] = ""
+            row["Total Issued Shares"] = ""
+            row["Date of Lodgement"] = extract_submission_date(text68)
+            row["Business Address"] = business_address(text68)
+            row["Financial Record Address"] = financial_address(text68)
 
-        for s58_pdf, s58_text, s58_date_str, s58_dt in find_all_section58(folder):
-            if base_dt and s58_dt and s58_dt <= base_dt:
+            directors = list(extract_directors(text68))
+            members = list(extract_members(text68))
+            total_shares = ""
+
+            for s58_pdf, s58_text, s58_date_str, s58_dt in find_all_section58(folder):
+                if base_dt and s58_dt and s58_dt <= base_dt:
+                    continue
+                for nd in extract_directors_section58(s58_text):
+                    app_date = nd.get("Appointment Date", "")
+                    app_dt = parse_date(app_date) if app_date else None
+                    if app_dt and (base_dt is None or app_dt > base_dt):
+                        ic58 = nd.get("IC", "")
+                        if not any(d.get("IC", "") == ic58 for d in directors):
+                            directors.append(nd)
+                cess = extract_cessation_section58(s58_text)
+                if cess:
+                    cess_date = cess.get("Date of Cessation", "")
+                    cess_dt = parse_date(cess_date) if cess_date else None
+                    if cess_dt and (base_dt is None or cess_dt > base_dt):
+                        ic58 = cess.get("IC", "")
+                        name58 = cess.get("Name", "").strip().upper()
+                        directors = [
+                            d for d in directors
+                            if not (d.get("IC", "") == ic58 and d.get("Name", "").upper() == name58)
+                        ]
+
+            #
+            # Build director lookup for S51 member enrichment
+            #
+            director_lookup = {}
+            for d in directors:
+                ic = d.get("IC", "")
+                if ic:
+                    director_lookup[ic] = d
+
+            pdf51, s51_date_str, s51_date_dt = find_latest_section51(folder)
+            if pdf51:
+                text51 = read_pdf(pdf51)
+                members_51 = extract_members_section51(text51)
+                # Use PDF-level date for priority decision
+                s51_use = False
+                if base_dt is None and members_51:
+                    s51_use = True
+                elif s51_date_dt is not None and base_dt is not None and s51_date_dt >= base_dt:
+                    s51_use = True
+                # Also check member-level dates (backward compatibility)
+                if not s51_use:
+                    s51_member_dates = [parse_date(m.get("Date", "")) for m in members_51 if m.get("Date")]
+                    if s51_member_dates and (base_dt is None or max(s51_member_dates) >= base_dt):
+                        s51_use = True
+                if s51_use:
+                    print(f"  Using Section51 (date {s51_date_str or 'N/A'})")
+                    members = []
+                    for m in members_51:
+                        dir_info = director_lookup.get(m.get("IC", ""), {})
+                        members.append({
+                            "Type": m.get("Type", "INDIVIDUAL"),
+                            "Name": m.get("Name", ""),
+                            "ID Type": "MYKAD",
+                            "ID No": m.get("IC", ""),
+                            "Nationality": m.get("Nationality", "") or dir_info.get("Nationality", ""),
+                            "Race": m.get("Race", "") or dir_info.get("Race", ""),
+                            "Gender": dir_info.get("Gender", ""),
+                            "DOB": dir_info.get("DOB", ""),
+                            "Address": m.get("Address", ""),
+                            "Shares": m.get("Shares", ""),
+                            "Share Type": "ORDINARY SHARES",
+                            "Analysis": "",
+                            "Transferred In": m.get("Transferred In", ""),
+                            "Transferred Out": m.get("Transferred Out", ""),
+                            "Member Date": m.get("Date", ""),
+                        })
+                    total_shares = extract_total_shares_s51(text51)
+
+            row["Total Issued Shares"] = total_shares or extract_total_shares(text68)
+
+            pdf14, text14 = find_section14(folder)
+            if text14:
+                row["Incorporate Date"] = extract_incorporation_date(text14) or ""
+            if not row.get("Incorporate Date"):
+                # Fallback: search key PDFs in folder
+                fallback = find_incorporation_date_in_folder(folder)
+                if fallback:
+                    row["Incorporate Date"] = fallback
+
+        elif not pdf68:
+            pdf14, text14 = find_section14(folder)
+            if not pdf14:
+                print("  No Section68 or Section14 found.")
                 continue
-            for nd in extract_directors_section58(s58_text):
-                app_date = nd.get("Appointment Date", "")
-                app_dt = parse_date(app_date) if app_date else None
-                if app_dt and (base_dt is None or app_dt > base_dt):
-                    ic58 = nd.get("IC", "")
-                    if not any(d.get("IC", "") == ic58 for d in directors):
-                        directors.append(nd)
-            cess = extract_cessation_section58(s58_text)
-            if cess:
-                cess_date = cess.get("Date of Cessation", "")
-                cess_dt = parse_date(cess_date) if cess_date else None
-                if cess_dt and (base_dt is None or cess_dt > base_dt):
-                    ic58 = cess.get("IC", "")
-                    name58 = cess.get("Name", "").strip().upper()
-                    directors = [
-                        d for d in directors
-                        if not (d.get("IC", "") == ic58 and d.get("Name", "").upper() == name58)
-                    ]
 
-        pdf51 = find_latest_section51(folder)
-        if pdf51:
-            text51 = read_pdf(pdf51)
-            members_51 = extract_members_section51(text51)
-            s51_dates = [parse_date(m.get("Date", "")) for m in members_51 if m.get("Date")]
-            s51_latest = max(s51_dates) if s51_dates else None
-            if s51_dates and (base_dt is None or s51_latest >= base_dt):
-                print(f"  Using Section51 (date {s51_latest})")
-                members = []
-                for m in members_51:
-                    members.append({
-                        "Type": "INDIVIDUAL",
-                        "Name": m.get("Name", ""),
-                        "ID Type": "MYKAD",
-                        "ID No": m.get("IC", ""),
-                        "Nationality": m.get("Nationality", ""),
-                        "Race": m.get("Race", ""),
-                        "Gender": "",
-                        "DOB": "",
-                        "Address": m.get("Address", ""),
-                        "Shares": m.get("Shares", ""),
-                        "Share Type": "ORDINARY SHARES",
-                        "Analysis": "",
-                        "Transferred In": m.get("Transferred In", ""),
-                        "Transferred Out": m.get("Transferred Out", ""),
-                        "Member Date": m.get("Date", ""),
-                    })
-                row["Total Issued Shares"] = extract_total_shares_s51(text51) or row["Total Issued Shares"]
+            print(f"  Using Section14 ({pdf14.name})")
 
-    else:
-        continue
+            co = extract_company_section14(text14)
+            row = {}
+            row["Folder"] = folder.name
+            co_name = co["name"]
+            # Check Section 27 name change
+            s27_name = find_section27_new_name(folder)
+            if s27_name:
+                print(f"  Section27 name: {co_name} → {s27_name}")
+                co_name = s27_name
+            row["Company Name"] = co_name
+            row["Reg No"] = co["reg_no"]
+            inc_date = extract_incorporation_date(text14)
+            inc_dt = parse_date(inc_date) if inc_date else None
+            row["Annual Return Date"] = ""
+            row["Incorporate Date"] = inc_date or ""
+            if not row["Incorporate Date"]:
+                fallback = find_incorporation_date_in_folder(folder)
+                if fallback:
+                    row["Incorporate Date"] = fallback
+            base_dt = inc_dt
+            if inc_dt:
+                try:
+                    ar_dt_calc = inc_dt.replace(year=inc_dt.year + 1)
+                    row["Annual Return Date"] = ar_dt_calc.strftime("%d/%m/%Y")
+                except ValueError:
+                    pass
+            row["Total Issued Shares"] = extract_total_shares_section14(text14)
+            row["Date of Lodgement"] = extract_submission_date(text14)
+            row["Business Address"] = co["business_address"]
+            row["Financial Record Address"] = co["registered_address"]
 
-    for i, d in enumerate(directors, start=1):
-        row[f"Director{i} Name"] = d.get("Name", "")
-        row[f"Director{i} IC"] = d.get("IC", "")
-        row[f"Director{i} DOB"] = d.get("DOB", "")
-        row[f"Director{i} Nationality"] = d.get("Nationality", "")
-        row[f"Director{i} Race"] = d.get("Race", "")
-        row[f"Director{i} Gender"] = d.get("Gender", "")
-        row[f"Director{i} Residential Address"] = d.get("Residential", "")
-        row[f"Director{i} Service Address"] = d.get("Service Address", "")
+            directors = list(extract_directors_section14(text14))
+            members = list(extract_members_section14(text14))
+            for m in members:
+                m["Type"] = "INDIVIDUAL"
+                m["Gender"] = ""
+                m["Analysis"] = ""
+                if not m.get("ID Type"):
+                    m["ID Type"] = "MYKAD"
 
-    row["_members"] = members
-    rows.append(row)
+            for s58_pdf, s58_text, s58_date_str, s58_dt in find_all_section58(folder):
+                if base_dt and s58_dt and s58_dt <= base_dt:
+                    continue
+                for nd in extract_directors_section58(s58_text):
+                    app_date = nd.get("Appointment Date", "")
+                    app_dt = parse_date(app_date) if app_date else None
+                    if app_dt and (base_dt is None or app_dt > base_dt):
+                        ic58 = nd.get("IC", "")
+                        if not any(d.get("IC", "") == ic58 for d in directors):
+                            directors.append(nd)
+                cess = extract_cessation_section58(s58_text)
+                if cess:
+                    cess_date = cess.get("Date of Cessation", "")
+                    cess_dt = parse_date(cess_date) if cess_date else None
+                    if cess_dt and (base_dt is None or cess_dt > base_dt):
+                        ic58 = cess.get("IC", "")
+                        name58 = cess.get("Name", "").strip().upper()
+                        directors = [
+                            d for d in directors
+                            if not (d.get("IC", "") == ic58 and d.get("Name", "").upper() == name58)
+                        ]
 
+            #
+            # Build director lookup for S51 member enrichment
+            #
+            director_lookup = {}
+            for d in directors:
+                ic = d.get("IC", "")
+                if ic:
+                    director_lookup[ic] = d
 
-def save_to_sqlite(df, table_name):
-    DB_DIR.mkdir(parents=True, exist_ok=True)
-    db_path = DB_DIR / "csai_master.db"
-    conn = sqlite3.connect(str(db_path))
-    df.to_sql(table_name, conn, if_exists="replace", index=False)
-    conn.close()
-    print(f"SQLite updated : {table_name}")
-
-
-####################################################
-# EXPORT
-####################################################
-
-#
-# Find max members across all rows
-#
-
-max_members = max(
-    (len(r.get("_members", [])) for r in rows),
-    default=0
-)
-
-#
-# Flatten members into columns
-#
-
-MEMBER_FIELDS = [
-    ("Type", "Type"),
-    ("Name", "Name"),
-    ("ID Type", "ID Type"),
-    ("ID No", "ID No"),
-    ("Nationality", "Nationality"),
-    ("Race", "Race"),
-    ("Gender", "Gender"),
-    ("DOB", "DOB"),
-    ("Address", "Address"),
-    ("Shares", "Shares"),
-    ("Share Type", "Share Type"),
-    ("Analysis", "Analysis"),
-]
-
-for r in rows:
-
-    members = r.pop("_members", [])
-
-    for j in range(max_members):
-
-        prefix = f"Member{j + 1}"
-
-        if j < len(members):
-
-            m = members[j]
-
-            for col_key, dict_key in MEMBER_FIELDS:
-                r[f"{prefix} {col_key}"] = m.get(
-                    dict_key, ""
-                )
+            pdf51, s51_date_str, s51_date_dt = find_latest_section51(folder)
+            if pdf51:
+                text51 = read_pdf(pdf51)
+                members_51 = extract_members_section51(text51)
+                # Use PDF-level date for priority decision
+                s51_use = False
+                if base_dt is None and members_51:
+                    s51_use = True
+                elif s51_date_dt is not None and base_dt is not None and s51_date_dt >= base_dt:
+                    s51_use = True
+                # Also check member-level dates (backward compatibility)
+                if not s51_use:
+                    s51_member_dates = [parse_date(m.get("Date", "")) for m in members_51 if m.get("Date")]
+                    if s51_member_dates and (base_dt is None or max(s51_member_dates) >= base_dt):
+                        s51_use = True
+                if s51_use:
+                    print(f"  Using Section51 (date {s51_date_str or 'N/A'})")
+                    members = []
+                    for m in members_51:
+                        dir_info = director_lookup.get(m.get("IC", ""), {})
+                        members.append({
+                            "Type": m.get("Type", "INDIVIDUAL"),
+                            "Name": m.get("Name", ""),
+                            "ID Type": "MYKAD",
+                            "ID No": m.get("IC", ""),
+                            "Nationality": m.get("Nationality", "") or dir_info.get("Nationality", ""),
+                            "Race": m.get("Race", "") or dir_info.get("Race", ""),
+                            "Gender": dir_info.get("Gender", ""),
+                            "DOB": dir_info.get("DOB", ""),
+                            "Address": m.get("Address", ""),
+                            "Shares": m.get("Shares", ""),
+                            "Share Type": "ORDINARY SHARES",
+                            "Analysis": "",
+                            "Transferred In": m.get("Transferred In", ""),
+                            "Transferred Out": m.get("Transferred Out", ""),
+                            "Member Date": m.get("Date", ""),
+                        })
+                    row["Total Issued Shares"] = extract_total_shares_s51(text51) or row["Total Issued Shares"]
 
         else:
+            continue
 
-            for col_key, dict_key in MEMBER_FIELDS:
-                r[f"{prefix} {col_key}"] = ""
+        for i, d in enumerate(directors, start=1):
+            row[f"Director{i} Name"] = d.get("Name", "")
+            row[f"Director{i} IC"] = d.get("IC", "")
+            row[f"Director{i} DOB"] = d.get("DOB", "")
+            row[f"Director{i} Nationality"] = d.get("Nationality", "")
+            row[f"Director{i} Race"] = d.get("Race", "")
+            row[f"Director{i} Gender"] = d.get("Gender", "")
+            row[f"Director{i} Residential Address"] = d.get("Residential", "")
+            row[f"Director{i} Service Address"] = d.get("Service Address", "")
 
+        row["_members"] = members
+        rows.append(row)
 
-df = pd.DataFrame(rows)
+    ####################################################
+    # EXPORT
+    ####################################################
 
-#
-# Ensure ID/IC columns stored as strings (prevent Excel float .0)
-#
+    max_members = max(
+        (len(r.get("_members", [])) for r in rows),
+        default=0
+    )
 
-string_cols = [
-    c for c in df.columns
-    if "IC" in c or "ID No" in c
-]
+    MEMBER_FIELDS = [
+        ("Type", "Type"),
+        ("Name", "Name"),
+        ("ID Type", "ID Type"),
+        ("ID No", "ID No"),
+        ("Nationality", "Nationality"),
+        ("Race", "Race"),
+        ("Gender", "Gender"),
+        ("DOB", "DOB"),
+        ("Address", "Address"),
+        ("Shares", "Shares"),
+        ("Share Type", "Share Type"),
+        ("Analysis", "Analysis"),
+    ]
 
-for col in string_cols:
-    if col in df.columns:
-        df[col] = df[col].apply(
-            lambda x: str(int(x)) if pd.notna(x) and isinstance(x, float) and x == int(x) else str(x) if pd.notna(x) else ""
-        )
+    for r in rows:
+        members = r.pop("_members", [])
+        for j in range(max_members):
+            prefix = f"Member{j + 1}"
+            if j < len(members):
+                m = members[j]
+                for col_key, dict_key in MEMBER_FIELDS:
+                    r[f"{prefix} {col_key}"] = m.get(dict_key, "")
+            else:
+                for col_key, dict_key in MEMBER_FIELDS:
+                    r[f"{prefix} {col_key}"] = ""
 
-df.to_excel(
-    OUTPUT_FILE,
-    index=False
-)
-if "UpdatedAt" not in df.columns:
-    df["UpdatedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-save_to_sqlite(df, "Client_Master")
+    df = pd.DataFrame(rows)
 
-print(df)
+    string_cols = [
+        c for c in df.columns
+        if "IC" in c or "ID No" in c
+    ]
 
-print("\nDONE")
-print(OUTPUT_FILE)
+    for col in string_cols:
+        if col in df.columns:
+            df[col] = df[col].apply(
+                lambda x: str(int(x)) if pd.notna(x) and isinstance(x, float) and x == int(x) else str(x) if pd.notna(x) else ""
+            )
+
+    df.to_excel(OUTPUT_FILE, index=False)
+    if "UpdatedAt" not in df.columns:
+        df["UpdatedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    save_to_sqlite(df, "Client_Master")
+
+    print(df)
+    print("\nDONE")
+    print(OUTPUT_FILE)
