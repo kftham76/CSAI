@@ -1485,6 +1485,7 @@ for folder in sorted(CLIENT_ROOT.iterdir()):
         row["Company Name"] = company_name(text68)
         row["Reg No"] = reg_no(text68)
         row["Annual Return Date"] = s68_ar_date_str or ""
+        row["Incorporate Date"] = ""
         row["Total Issued Shares"] = ""
         row["Date of Lodgement"] = extract_submission_date(text68)
         row["Business Address"] = business_address(text68)
@@ -1566,8 +1567,8 @@ for folder in sorted(CLIENT_ROOT.iterdir()):
         row["Reg No"] = co["reg_no"]
         inc_date = extract_incorporation_date(text14)
         inc_dt = parse_date(inc_date) if inc_date else None
-        row["Incorporate Date"] = inc_date or ""
         row["Annual Return Date"] = ""
+        row["Incorporate Date"] = inc_date or ""
         base_dt = inc_dt
         if inc_dt:
             try:
