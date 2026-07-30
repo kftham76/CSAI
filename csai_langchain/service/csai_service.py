@@ -8,6 +8,10 @@ from csai_langchain.tools.beneficial_owner_tool import (
 from csai_langchain.tools.person_directorship_tool import (
     PersonDirectorshipTool,
 )
+from csai_langchain.tools.auditor_tool import AuditorTool
+from csai_langchain.tools.company_list_tool import (
+    CompanyListTool,
+)
 
 
 class CSAIService:
@@ -18,6 +22,8 @@ class CSAIService:
         self.shareholder_tool = ShareholderTool()
         self.bo_tool = BeneficialOwnerTool()
         self.person_tool = PersonDirectorshipTool()
+        self.auditor_tool = AuditorTool()
+        self.company_list_tool = CompanyListTool()
 
         self._closed = False
 
@@ -26,17 +32,38 @@ class CSAIService:
     ####################################################
 
     @staticmethod
-    def missing_company_result(intent_name):
+    def missing_company_result(
+        intent_name,
+        database_name="client database"
+    ):
 
         return SearchResult(
             status="not_found",
             intent=intent_name,
             answer=(
                 "The company could not be matched "
-                "to a company in the client database."
+                f"to a company in the {database_name}."
             ),
             company="",
             person="",
+            count=0,
+            results=[],
+            sources=[]
+        )
+
+    @staticmethod
+    def missing_auditor_result(intent_name):
+
+        return SearchResult(
+            status="not_found",
+            intent=intent_name,
+            answer=(
+                "The auditor could not be matched "
+                "to an auditor in the auditor database."
+            ),
+            company="",
+            person="",
+            auditor="",
             count=0,
             results=[],
             sources=[]
@@ -98,6 +125,15 @@ class CSAIService:
             or ""
         ).strip()
 
+        auditor = (
+            getattr(
+                intent,
+                "auditor",
+                ""
+            )
+            or ""
+        ).strip()
+
         question = (
             getattr(
                 intent,
@@ -106,6 +142,183 @@ class CSAIService:
             )
             or ""
         ).strip()
+
+        ################################################
+        # Company to auditor
+        ################################################
+
+        if intent_name == "auditor":
+
+            if not company:
+
+                return self.missing_company_result(
+                    "auditor",
+                    "auditor database"
+                )
+
+            results = (
+                self.auditor_tool
+                .get_auditor_for_company(
+                    company
+                )
+            )
+
+            resolved_auditor = (
+                results[0].get(
+                    "Auditor Name",
+                    ""
+                )
+                if results
+                else ""
+            )
+
+            return SearchResult(
+                status=(
+                    "success"
+                    if results
+                    else "not_found"
+                ),
+                intent="auditor",
+                answer=(
+                    ""
+                    if results
+                    else "No auditor was found."
+                ),
+                company=company,
+                person="",
+                auditor=resolved_auditor,
+                count=len(results),
+                results=results,
+                sources=(
+                    [
+                        "auditors.db:Sheet1"
+                    ]
+                    if results
+                    else []
+                )
+            )
+
+        ################################################
+        # Auditor to companies
+        ################################################
+
+        if intent_name == "auditor_companies":
+
+            if not auditor:
+
+                return self.missing_auditor_result(
+                    "auditor_companies"
+                )
+
+            results = (
+                self.auditor_tool
+                .get_companies_by_auditor(
+                    auditor
+                )
+            )
+
+            return SearchResult(
+                status=(
+                    "success"
+                    if results
+                    else "not_found"
+                ),
+                intent="auditor_companies",
+                answer=(
+                    ""
+                    if results
+                    else (
+                        "No companies were found "
+                        "for this auditor."
+                    )
+                ),
+                company="",
+                person="",
+                auditor=auditor,
+                count=len(results),
+                results=results,
+                sources=(
+                    [
+                        "auditors.db:Sheet1"
+                    ]
+                    if results
+                    else []
+                )
+            )
+
+        ################################################
+        # Distinct auditor list
+        ################################################
+
+        if intent_name == "auditor_list":
+
+            results = (
+                self.auditor_tool
+                .get_distinct_auditors()
+            )
+
+            return SearchResult(
+                status=(
+                    "success"
+                    if results
+                    else "not_found"
+                ),
+                intent="auditor_list",
+                answer=(
+                    ""
+                    if results
+                    else "No auditors were found."
+                ),
+                company="",
+                person="",
+                auditor="",
+                count=len(results),
+                results=results,
+                sources=(
+                    [
+                        "auditors.db:Sheet1"
+                    ]
+                    if results
+                    else []
+                )
+            )
+
+        ################################################
+        # Client company-name list
+        ################################################
+
+        if intent_name == "company_list":
+
+            results = (
+                self.company_list_tool
+                .get_all_company_names()
+            )
+
+            return SearchResult(
+                status=(
+                    "success"
+                    if results
+                    else "not_found"
+                ),
+                intent="company_list",
+                answer=(
+                    ""
+                    if results
+                    else "No companies were found."
+                ),
+                company="",
+                person="",
+                auditor="",
+                count=len(results),
+                results=results,
+                sources=(
+                    [
+                        "Client_Master"
+                    ]
+                    if results
+                    else []
+                )
+            )
 
         ################################################
         # Director
@@ -294,6 +507,7 @@ class CSAIService:
             answer="Unknown intent.",
             company=company,
             person=person,
+            auditor=auditor,
             count=0,
             results=[],
             sources=[]

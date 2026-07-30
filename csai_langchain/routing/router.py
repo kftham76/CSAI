@@ -21,6 +21,57 @@ class Router:
                     question=question
                 )
 
+        # distinct auditor list
+        for p in AUDITOR_LIST:
+            if p.search(q):
+                return Intent(
+                    intent="auditor_list",
+                    question=question
+                )
+
+        # recognized auditor firm
+        auditor = self.extractor.extract_auditor(
+            question
+        )
+
+        if auditor:
+            return Intent(
+                intent="auditor_companies",
+                auditor=auditor,
+                question=question
+            )
+
+        # reverse auditor lookup with an unknown firm
+        for p in AUDITOR_COMPANIES:
+            if p.search(q):
+                return Intent(
+                    intent="auditor_companies",
+                    auditor="",
+                    question=question
+                )
+
+        # company auditor lookup
+        for p in AUDITOR:
+            if p.search(q):
+                return Intent(
+                    intent="auditor",
+                    company=(
+                        self.extractor
+                        .extract_auditor_company(
+                            question
+                        )
+                    ),
+                    question=question
+                )
+
+        # client company-name list
+        for p in COMPANY_LIST:
+            if p.search(q):
+                return Intent(
+                    intent="company_list",
+                    question=question
+                )
+
         # beneficial owner
         for p in BENEFICIAL_OWNER:
             if p.search(q):

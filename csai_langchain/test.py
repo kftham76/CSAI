@@ -95,6 +95,339 @@ TEST_CASES = [
     },
 
     {
+        "name": "Company auditor",
+        "question": (
+            "Who is the auditor of Action Multiple?"
+        ),
+        "expected_intent": "auditor",
+        "expected_status": "success",
+        "expected_company": (
+            "ACTION MULTIPLE SDN. BHD."
+        ),
+        "expected_auditor": (
+            "Y.H.CHANG & PARTNERS"
+        ),
+        "expected_count": 1,
+        "expected_sources": [
+            "auditors.db:Sheet1",
+        ],
+        "expected_result_contains": [
+            {
+                "Company Name": (
+                    "ACTION MULTIPLE SDN. BHD."
+                ),
+                "Auditor Firm No": "AF1432",
+                "Auditor Name": (
+                    "Y.H.CHANG & PARTNERS"
+                ),
+            },
+        ],
+    },
+
+    {
+        "name": "Company auditor alias",
+        "question": (
+            "Who is the auditor for AMSB?"
+        ),
+        "expected_intent": "auditor",
+        "expected_status": "success",
+        "expected_company": (
+            "ACTION MULTIPLE SDN. BHD."
+        ),
+        "expected_auditor": (
+            "Y.H.CHANG & PARTNERS"
+        ),
+        "expected_count": 1,
+    },
+
+    {
+        "name": "Auditor-only company name",
+        "question": (
+            "Who audits Highscore Estate?"
+        ),
+        "expected_intent": "auditor",
+        "expected_status": "success",
+        "expected_company": (
+            "HIGHSCORE ESTATE SDN. BHD."
+        ),
+        "expected_auditor": (
+            "Y.H.CHANG & PARTNERS"
+        ),
+        "expected_count": 1,
+        "expected_result_contains": [
+            {
+                "Company Name": (
+                    "HIGHSCORE ESTATE SDN. BHD."
+                ),
+                "Auditor Name": (
+                    "Y.H.CHANG & PARTNERS"
+                ),
+            },
+        ],
+    },
+
+    {
+        "name": "Auditor company alias remapped by registration",
+        "question": (
+            "Who audits HIGHSCORE?"
+        ),
+        "expected_intent": "auditor",
+        "expected_status": "success",
+        "expected_company": (
+            "HIGHSCORE ESTATE SDN. BHD."
+        ),
+        "expected_auditor": (
+            "Y.H.CHANG & PARTNERS"
+        ),
+        "expected_count": 1,
+    },
+
+    {
+        "name": "YH Chang companies",
+        "question": (
+            "Which companies are under "
+            "Y.H.CHANG & PARTNERS?"
+        ),
+        "expected_intent": "auditor_companies",
+        "expected_status": "success",
+        "expected_auditor": (
+            "Y.H.CHANG & PARTNERS"
+        ),
+        "expected_count": 35,
+        "expected_sources": [
+            "auditors.db:Sheet1",
+        ],
+        "expected_unique_result_field": (
+            "Reg No"
+        ),
+        "expected_result_contains": [
+            {
+                "Company Name": (
+                    "ACTION MULTIPLE SDN. BHD."
+                ),
+                "Auditor Name": (
+                    "Y.H.CHANG & PARTNERS"
+                ),
+            },
+            {
+                "Company Name": (
+                    "FAVOUREX SDN. BHD."
+                ),
+                "Auditor Name": (
+                    "Y.H.CHANG & PARTNERS"
+                ),
+            },
+            {
+                "Company Name": (
+                    "HIGHSCORE ESTATE SDN. BHD."
+                ),
+                "Auditor Name": (
+                    "Y.H.CHANG & PARTNERS"
+                ),
+            },
+            {
+                "Company Name": (
+                    "INSIGHT PROFIT SDN. BHD."
+                ),
+                "Auditor Name": (
+                    "Y.H.CHANG & PARTNERS"
+                ),
+            },
+        ],
+    },
+
+    {
+        "name": "Alan Yoon companies",
+        "question": (
+            "Which companies are under "
+            "Alan Yoon Associates?"
+        ),
+        "expected_intent": "auditor_companies",
+        "expected_status": "success",
+        "expected_auditor": (
+            "ALAN YOON ASSOCIATES"
+        ),
+        "expected_count": 27,
+    },
+
+    {
+        "name": "TNL Partners companies",
+        "question": (
+            "Which companies are under "
+            "TNL Partners PLT?"
+        ),
+        "expected_intent": "auditor_companies",
+        "expected_status": "success",
+        "expected_auditor": (
+            "TNL PARTNERS PLT"
+        ),
+        "expected_count": 4,
+        "expected_result_contains": [
+            {
+                "Company Name": (
+                    "CHARTERWAY REALTY SDN. BHD."
+                ),
+                "Auditor Name": (
+                    "TNL PARTNERS PLT"
+                ),
+            },
+        ],
+    },
+
+    {
+        "name": "Hisham companies",
+        "question": (
+            "Which companies are under "
+            "Hisham & Co?"
+        ),
+        "expected_intent": "auditor_companies",
+        "expected_status": "success",
+        "expected_auditor": (
+            "HISHAM & CO"
+        ),
+        "expected_count": 2,
+        "expected_result_contains": [
+            {
+                "Company Name": (
+                    "FIRST TOUCH BOOKS & "
+                    "STATIONERY SDN. BHD."
+                ),
+            },
+            {
+                "Company Name": (
+                    "HOAY AUTOMATION SDN. BHD."
+                ),
+            },
+        ],
+    },
+
+    {
+        "name": "Distinct auditor list",
+        "question": (
+            "List all auditors"
+        ),
+        "expected_intent": "auditor_list",
+        "expected_status": "success",
+        "expected_auditor": "",
+        "expected_count": 13,
+        "expected_sources": [
+            "auditors.db:Sheet1",
+        ],
+        "expected_unique_result_field": (
+            "Auditor Name"
+        ),
+        "expected_result_sum": {
+            "field": "Company Count",
+            "value": 80,
+        },
+        "expected_result_contains": [
+            {
+                "Auditor Name": (
+                    "Y.H.CHANG & PARTNERS"
+                ),
+                "Company Count": 35,
+            },
+            {
+                "Auditor Name": (
+                    "THELYX MALAYSIA"
+                ),
+                "Company Count": 1,
+            },
+            {
+                "Auditor Name": (
+                    "THELYX MALAYSIA PLT"
+                ),
+                "Company Count": 1,
+            },
+        ],
+    },
+
+    {
+        "name": "Client company-name list",
+        "question": (
+            "List all company names"
+        ),
+        "expected_intent": "company_list",
+        "expected_status": "success",
+        "expected_count": 80,
+        "expected_sources": [
+            "Client_Master",
+        ],
+        "expected_unique_result_field": (
+            "Company Name"
+        ),
+        "expected_result_keys": [
+            "Company Name",
+        ],
+        "expected_sorted_result_field": (
+            "Company Name"
+        ),
+        "expected_result_contains": [
+            {
+                "Company Name": (
+                    "HIGHSCORE TRADING SDN. BHD."
+                ),
+            },
+        ],
+        "expected_result_excludes": [
+            {
+                "Company Name": (
+                    "HIGHSCORE ESTATE SDN. BHD."
+                ),
+            },
+        ],
+    },
+
+    {
+        "name": "Show all client companies",
+        "question": (
+            "Show all companies"
+        ),
+        "expected_intent": "company_list",
+        "expected_status": "success",
+        "expected_count": 80,
+        "expected_sources": [
+            "Client_Master",
+        ],
+    },
+
+    {
+        "name": "Ambiguous auditor safety test",
+        "question": (
+            "Which companies are under Thelyx?"
+        ),
+        "expected_intent": "auditor_companies",
+        "expected_status": "not_found",
+        "expected_auditor": "",
+        "expected_count": 0,
+    },
+
+    {
+        "name": "Unknown auditor safety test",
+        "question": (
+            "Which companies are audited by "
+            "NON EXISTENT AUDITOR?"
+        ),
+        "expected_intent": "auditor_companies",
+        "expected_status": "not_found",
+        "expected_auditor": "",
+        "expected_count": 0,
+    },
+
+    {
+        "name": "Unknown auditor company safety test",
+        "question": (
+            "Who is the auditor of "
+            "NON EXISTENT TEST COMPANY SDN BHD?"
+        ),
+        "expected_intent": "auditor",
+        "expected_status": "not_found",
+        "expected_company": "",
+        "expected_auditor": "",
+        "expected_count": 0,
+    },
+
+    {
         "name": (
             "General company-secretarial knowledge"
         ),
@@ -267,6 +600,30 @@ def run_checks(
                 )
             )
 
+    expected_auditor = test_case.get(
+        "expected_auditor"
+    )
+
+    if expected_auditor is not None:
+
+        actual_auditor = (
+            result_data.get(
+                "auditor",
+                ""
+            )
+            or ""
+        )
+
+        if actual_auditor != expected_auditor:
+
+            errors.append(
+                (
+                    f"Expected auditor "
+                    f"'{expected_auditor}', "
+                    f"received '{actual_auditor}'."
+                )
+            )
+
     expected_count = test_case.get(
         "expected_count"
     )
@@ -316,6 +673,163 @@ def run_checks(
                     "Expected result record "
                     f"was not found: "
                     f"{expected_record}"
+                )
+            )
+
+    excluded_records = test_case.get(
+        "expected_result_excludes",
+        []
+    )
+
+    for excluded_record in excluded_records:
+
+        found = any(
+            record_matches(
+                actual_record,
+                excluded_record
+            )
+            for actual_record in actual_records
+        )
+
+        if found:
+
+            errors.append(
+                (
+                    "Excluded result record "
+                    f"was found: "
+                    f"{excluded_record}"
+                )
+            )
+
+    expected_result_keys = test_case.get(
+        "expected_result_keys"
+    )
+
+    if expected_result_keys is not None:
+
+        expected_keys = set(
+            expected_result_keys
+        )
+
+        for actual_record in actual_records:
+
+            if set(actual_record) != expected_keys:
+
+                errors.append(
+                    (
+                        "Expected every result record "
+                        f"to contain only "
+                        f"{expected_result_keys}."
+                    )
+                )
+
+                break
+
+    sorted_field = test_case.get(
+        "expected_sorted_result_field"
+    )
+
+    if sorted_field:
+
+        values = [
+            record.get(
+                sorted_field
+            )
+            for record in actual_records
+        ]
+
+        expected_values = sorted(
+            values,
+            key=lambda value: (
+                str(value).upper(),
+                str(value)
+            )
+        )
+
+        if values != expected_values:
+
+            errors.append(
+                (
+                    "Expected result values to be "
+                    f"sorted by '{sorted_field}'."
+                )
+            )
+
+    expected_sources = test_case.get(
+        "expected_sources"
+    )
+
+    if expected_sources is not None:
+
+        actual_sources = result_data.get(
+            "sources",
+            []
+        ) or []
+
+        if actual_sources != expected_sources:
+
+            errors.append(
+                (
+                    "Expected sources "
+                    f"{expected_sources}, "
+                    f"received {actual_sources}."
+                )
+            )
+
+    unique_field = test_case.get(
+        "expected_unique_result_field"
+    )
+
+    if unique_field:
+
+        values = [
+            record.get(
+                unique_field
+            )
+
+            for record in actual_records
+        ]
+
+        if len(values) != len(set(values)):
+
+            errors.append(
+                (
+                    "Expected unique result values "
+                    f"for '{unique_field}'."
+                )
+            )
+
+    expected_sum = test_case.get(
+        "expected_result_sum"
+    )
+
+    if expected_sum:
+
+        field = expected_sum[
+            "field"
+        ]
+
+        expected_value = expected_sum[
+            "value"
+        ]
+
+        actual_value = sum(
+            record.get(
+                field,
+                0
+            )
+            or 0
+
+            for record in actual_records
+        )
+
+        if actual_value != expected_value:
+
+            errors.append(
+                (
+                    f"Expected '{field}' to sum "
+                    f"to {expected_value}, "
+                    f"received {actual_value}."
                 )
             )
 

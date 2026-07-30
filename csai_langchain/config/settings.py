@@ -20,6 +20,8 @@ CLIENT_DB = DB_FOLDER / "csai_master.db"
 
 EBOS_DB = DB_FOLDER / "ebos_master.db"
 
+AUDITORS_DB = DB_FOLDER / "auditors.db"
+
 ########################################################
 # COMPANY ALIASES
 ########################################################

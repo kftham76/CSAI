@@ -14,6 +14,8 @@ class SearchResult:
 
     person: str = ""
 
+    auditor: str = ""
+
     count: int = 0
 
     results: list = field(default_factory=list)

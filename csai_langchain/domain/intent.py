@@ -10,4 +10,6 @@ class Intent:
 
     person: str = ""
 
+    auditor: str = ""
+
     question: str = ""

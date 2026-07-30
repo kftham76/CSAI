@@ -9,6 +9,9 @@ from csai_langchain.config.settings import (
 from csai_langchain.repositories.company_repository import (
     CompanyRepository,
 )
+from csai_langchain.repositories.auditor_repository import (
+    AuditorRepository,
+)
 
 
 class EntityExtractor:
@@ -29,8 +32,12 @@ class EntityExtractor:
     def __init__(self):
 
         self.repo = CompanyRepository()
+        self.auditor_repo = AuditorRepository()
 
         companies = self.repo.get_all_companies()
+        auditor_companies = (
+            self.auditor_repo.get_all_records()
+        )
 
         company_map = {}
         self.people = set()
@@ -148,6 +155,87 @@ class EntityExtractor:
             reverse=True
         )
 
+        ####################################################
+        # Auditor company and firm lookups
+        ####################################################
+
+        self.auditor_company_lookup = (
+            self._build_company_lookup(
+                auditor_companies
+            )
+        )
+
+        self.auditor_alias_lookup = (
+            self._build_auditor_alias_lookup(
+                companies,
+                auditor_companies
+            )
+        )
+
+        self.auditor_alias_items = sorted(
+            self.auditor_alias_lookup.items(),
+            key=lambda item: (
+                len(item[0].split()),
+                len(item[0]),
+            ),
+            reverse=True
+        )
+
+        self.auditor_lookup = []
+
+        for row in (
+            self.auditor_repo
+            .get_distinct_auditors()
+        ):
+
+            auditor = (
+                row.get(
+                    "Auditor Name",
+                    ""
+                )
+                or ""
+            ).strip()
+
+            normalized = (
+                self.auditor_repo
+                .normalize_auditor(
+                    auditor
+                )
+            )
+
+            if not normalized:
+                continue
+
+            tokens = tuple(
+                token
+
+                for token in normalized.split()
+
+                if token not in {
+                    "AND",
+                    "ASSOCIATES",
+                    "CO",
+                    "FIRM",
+                    "MALAYSIA",
+                    "PARTNERS",
+                    "PLT",
+                }
+            )
+
+            self.auditor_lookup.append({
+                "normalized": normalized,
+                "auditor": auditor,
+                "tokens": tokens,
+            })
+
+        self.auditor_lookup.sort(
+            key=lambda item: (
+                len(item["tokens"]),
+                len(item["normalized"]),
+            ),
+            reverse=True
+        )
+
     ####################################################
     # Normalize
     ####################################################
@@ -205,6 +293,188 @@ class EntityExtractor:
                 and len(token) >= 2
             )
         )
+
+    ####################################################
+    # Build company lookup
+    ####################################################
+
+    def _build_company_lookup(
+        self,
+        rows
+    ):
+
+        company_map = {}
+
+        for row in rows:
+
+            company = row.get(
+                "Company Name",
+                ""
+            )
+
+            if (
+                not company
+                or pd.isna(company)
+            ):
+                continue
+
+            company = str(
+                company
+            ).strip()
+
+            normalized = self.normalize(
+                company
+            )
+
+            if normalized:
+
+                company_map[
+                    normalized
+                ] = company
+
+        lookup = []
+
+        for normalized, company in company_map.items():
+
+            lookup.append({
+                "normalized": normalized,
+                "company": company,
+                "tokens":
+                    self.get_significant_company_tokens(
+                        normalized
+                    ),
+            })
+
+        lookup.sort(
+            key=lambda item: (
+                len(item["tokens"]),
+                len(item["normalized"]),
+            ),
+            reverse=True
+        )
+
+        return lookup
+
+    ####################################################
+    # Remap aliases to auditor company names
+    ####################################################
+
+    def _build_auditor_alias_lookup(
+        self,
+        client_rows,
+        auditor_rows
+    ):
+
+        client_registration = {}
+
+        for row in client_rows:
+
+            company = self.normalize(
+                row.get(
+                    "Company Name",
+                    ""
+                )
+            )
+
+            registration = str(
+                row.get(
+                    "Reg No",
+                    ""
+                )
+                or ""
+            ).strip()
+
+            if company:
+
+                client_registration[
+                    company
+                ] = registration
+
+        auditor_by_registration = {}
+        auditor_by_name = {}
+
+        for row in auditor_rows:
+
+            company = (
+                row.get(
+                    "Company Name",
+                    ""
+                )
+                or ""
+            )
+
+            if not company:
+                continue
+
+            company = str(
+                company
+            ).strip()
+
+            normalized = self.normalize(
+                company
+            )
+
+            registration = str(
+                row.get(
+                    "Reg No",
+                    ""
+                )
+                or ""
+            ).strip()
+
+            if normalized:
+
+                auditor_by_name[
+                    normalized
+                ] = company
+
+            if registration:
+
+                auditor_by_registration[
+                    registration
+                ] = company
+
+        alias_lookup = {}
+
+        for alias, client_company in (
+            self.company_alias_lookup.items()
+        ):
+
+            normalized_client = self.normalize(
+                client_company
+            )
+
+            registration = (
+                client_registration.get(
+                    normalized_client,
+                    ""
+                )
+            )
+
+            auditor_company = (
+                auditor_by_registration.get(
+                    registration
+                )
+                if registration
+                else ""
+            )
+
+            if not auditor_company:
+
+                auditor_company = (
+                    auditor_by_name.get(
+                        normalized_client,
+                        ""
+                    )
+                )
+
+            if auditor_company:
+
+                alias_lookup[
+                    alias
+                ] = auditor_company
+
+        return alias_lookup
 
     ####################################################
     # Load company aliases
@@ -326,6 +596,30 @@ class EntityExtractor:
         question
     ):
 
+        return self._extract_company(
+            question,
+            self.company_lookup,
+            self.company_alias_items
+        )
+
+    def extract_auditor_company(
+        self,
+        question
+    ):
+
+        return self._extract_company(
+            question,
+            self.auditor_company_lookup,
+            self.auditor_alias_items
+        )
+
+    def _extract_company(
+        self,
+        question,
+        company_lookup,
+        alias_items
+    ):
+
         normalized_question = (
             self.normalize(
                 question
@@ -349,7 +643,7 @@ class EntityExtractor:
 
         exact_matches = []
 
-        for item in self.company_lookup:
+        for item in company_lookup:
 
             normalized_company = item[
                 "normalized"
@@ -384,7 +678,7 @@ class EntityExtractor:
         alias_matches = []
 
         for alias, company in (
-            self.company_alias_items
+            alias_items
         ):
 
             if (
@@ -439,7 +733,7 @@ class EntityExtractor:
 
         candidates = []
 
-        for item in self.company_lookup:
+        for item in company_lookup:
 
             company_tokens = item[
                 "tokens"
@@ -524,6 +818,110 @@ class EntityExtractor:
             return ""
 
         return best["company"]
+
+    ####################################################
+    # Auditor Extraction
+    ####################################################
+
+    def extract_auditor(
+        self,
+        question
+    ):
+
+        normalized_question = (
+            self.auditor_repo
+            .normalize_auditor(
+                question
+            )
+        )
+
+        if not normalized_question:
+            return ""
+
+        question_tokens = set(
+            normalized_question.split()
+        )
+
+        padded_question = (
+            f" {normalized_question} "
+        )
+
+        exact_matches = [
+            item
+
+            for item in self.auditor_lookup
+
+            if (
+                f" {item['normalized']} "
+                in padded_question
+            )
+        ]
+
+        if exact_matches:
+
+            exact_matches.sort(
+                key=lambda item: len(
+                    item["normalized"]
+                ),
+                reverse=True
+            )
+
+            return exact_matches[
+                0
+            ]["auditor"]
+
+        candidates = []
+
+        for item in self.auditor_lookup:
+
+            tokens = set(
+                item["tokens"]
+            )
+
+            if (
+                tokens
+                and tokens.issubset(
+                    question_tokens
+                )
+            ):
+
+                candidates.append(
+                    item
+                )
+
+        if not candidates:
+            return ""
+
+        candidates.sort(
+            key=lambda item: (
+                len(item["tokens"]),
+                len(item["normalized"]),
+            ),
+            reverse=True
+        )
+
+        best_token_count = len(
+            candidates[0]["tokens"]
+        )
+
+        tied_auditors = {
+            item["auditor"]
+
+            for item in candidates
+
+            if len(
+                item["tokens"]
+            ) == best_token_count
+        }
+
+        if len(tied_auditors) != 1:
+            return ""
+
+        return next(
+            iter(
+                tied_auditors
+            )
+        )
 
     ####################################################
     # Person Extraction

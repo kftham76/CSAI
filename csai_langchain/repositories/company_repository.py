@@ -183,6 +183,64 @@ class CompanyRepository:
         )
 
     ####################################################
+    # Get all company names
+    ####################################################
+
+    def get_all_company_names(self):
+
+        df = self._read_all()
+
+        if (
+            df.empty
+            or "Company Name" not in df.columns
+        ):
+            return []
+
+        companies = {}
+
+        for value in df["Company Name"]:
+
+            if (
+                value is None
+                or pd.isna(value)
+            ):
+                continue
+
+            company_name = str(
+                value
+            ).strip()
+
+            normalized_name = self._normalize(
+                company_name
+            )
+
+            if (
+                not company_name
+                or not normalized_name
+                or normalized_name in companies
+            ):
+                continue
+
+            # Preserve the spelling from the first
+            # database row for each logical company.
+            companies[
+                normalized_name
+            ] = company_name
+
+        return [
+            {
+                "Company Name": company_name
+            }
+            for company_name in sorted(
+                companies.values(),
+                key=lambda name: (
+                    self._normalize(name),
+                    name
+                )
+            )
+        ]
+
+    ####################################################
     # Person directorship
     ####################################################
 
