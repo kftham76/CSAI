@@ -1,28 +1,53 @@
 from pathlib import Path
 from pypdf import PdfReader
 import pandas as pd
+import os
 import re
+import shutil
 import warnings
 from datetime import datetime
 import sqlite3
 
-# Optional OCR support for scanned PDFs
+# Optional OCR support for scanned PDFs. RapidOCR is the preferred backend
+# because it does not require a separately installed Tesseract executable.
+OCR_BACKEND = ""
+_OCR_ENGINE = None
+_OCR_CACHE = {}
+
 try:
-    import pytesseract
-    from pdf2image import convert_from_path
+    import numpy as np
+    import pypdfium2
+    from rapidocr_onnxruntime import RapidOCR
+    OCR_BACKEND = "rapidocr"
     OCR_AVAILABLE = True
 except ImportError:
-    OCR_AVAILABLE = False
+    try:
+        import pytesseract
+        from pdf2image import convert_from_path
+        pytesseract.get_tesseract_version()
+        OCR_BACKEND = "tesseract"
+        OCR_AVAILABLE = True
+    except (ImportError, OSError, FileNotFoundError):
+        OCR_AVAILABLE = False
 
 # Suppress pypdf warnings (multiple categories emitted by pypdf internals)
 warnings.filterwarnings("ignore", module="pypdf")
 warnings.filterwarnings("ignore", category=UserWarning)
 
-CLIENT_ROOT = Path(r"D:\CSAI_CLIENTS")
+CLIENT_ROOT = Path(os.environ.get("CSAI_CLIENT_ROOT", r"D:\CSAI_CLIENTS"))
 OUTPUT_FILE = Path(
-    r"D:\CSAI_DATA\Database\clients_master.xlsx"
+    os.environ.get(
+        "CSAI_OUTPUT_FILE",
+        r"D:\CSAI_DATA\Database\clients_master.xlsx",
+    )
 )
-DB_DIR = Path(r"C:\CSAI_OS\04 Python Tools\DB")
+DB_DIR = Path(
+    os.environ.get(
+        "CSAI_DB_DIR",
+        r"C:\CSAI_OS\04 Python Tools\DB",
+    )
+)
+CLIENT_FILTER_PATTERN = os.environ.get("CSAI_CLIENT_FILTER_REGEX", "").strip()
 
 
 ####################################################
@@ -522,6 +547,15 @@ def find_latest_section51(folder):
             latest_pdf = pdf
 
     return latest_pdf, latest_str, latest_dt
+
+
+def should_use_section51(section51_date, base_date, members):
+    """Section 51 replaces member data only when it is strictly newer."""
+    if not members:
+        return False
+    if base_date is None:
+        return section51_date is not None
+    return section51_date is not None and section51_date > base_date
 
 
 def extract_members_section51(text):
@@ -1454,18 +1488,15 @@ def find_section14(folder):
 
     for pdf in folder.rglob("*.pdf"):
         text = read_pdf(pdf)
-        # If text is empty, try OCR (scanned PDFs)
-        if not text.strip() and OCR_AVAILABLE:
-            text = try_ocr_pdf(pdf)
-            if text.strip():
+        is_section14 = is_section14_text(text)
+        # Only OCR likely Section 14 files. Scanning every image-only PDF in a
+        # client folder is both slow and likely to select an unrelated form.
+        if not is_section14 and is_section14_filename(pdf.name) and OCR_AVAILABLE:
+            ocr_text = try_ocr_pdf(pdf)
+            is_section14 = is_section14_text(ocr_text)
+            if is_section14:
+                text = ocr_text
                 print(f"  OCR used for {pdf.name}")
-        is_section14 = (
-            "APPLICATION FOR REGISTRATION OF A COMPANY" in text.upper()
-            or (
-                bool(re.search(r'Section\s*14', text, re.I))
-                and "PARTICULARS OF COMPANY" in text.upper()
-            )
-        )
         if not is_section14:
             continue
         has_regno = bool(re.search(r'Registration No\.', text, re.I))
@@ -1598,10 +1629,51 @@ def extract_total_shares_section14(text):
 
 
 def extract_incorporation_date(text):
-    m = re.search(r'Incorporation\s+Date\s+(\d{2}/\d{2}/\d{4})', text, re.I)
+    m = re.search(
+        r'Incorporation\s+Date\s*:?\s*(\d{2}[/-]\d{2}[/-]\d{4})',
+        text,
+        re.I,
+    )
     if m:
-        return m.group(1)
+        return m.group(1).replace("-", "/")
+
+    # Section 17 certificates use prose, including OCR variants such as
+    # "8h day" where the ordinal suffix was only partly recognized.
+    m = re.search(
+        r'on\s+and\s+from\s+the\s+(\d{1,2})(?:st|nd|rd|th|h)?\s+day\s+of\s+'
+        r'([A-Za-z]+)\s+(\d{4})\s*,?\s*incorporated',
+        text,
+        re.I,
+    )
+    if m:
+        try:
+            parsed = datetime.strptime(
+                f"{m.group(1)} {m.group(2)} {m.group(3)}",
+                "%d %B %Y",
+            )
+            return parsed.strftime("%d/%m/%Y")
+        except ValueError:
+            pass
     return ""
+
+
+def is_section14_filename(name):
+    name = name.lower()
+    return bool(
+        re.search(r'(?:section|sec)\s*14\b', name)
+        or "superform 14" in name
+    )
+
+
+def is_section14_text(text):
+    compact = re.sub(r'\s+', '', text).upper()
+    return (
+        "APPLICATIONFORREGISTRATIONOFACOMPANY" in compact
+        or (
+            "SECTION14" in compact
+            and "PARTICULARSOFCOMPANY" in compact
+        )
+    )
 
 
 def try_ocr_pdf(pdf_path):
@@ -1609,21 +1681,78 @@ def try_ocr_pdf(pdf_path):
     Returns text or empty string."""
     if not OCR_AVAILABLE:
         return ""
+    cache_key = str(Path(pdf_path).resolve())
+    if cache_key in _OCR_CACHE:
+        return _OCR_CACHE[cache_key]
     try:
-        images = convert_from_path(str(pdf_path))
         text_parts = []
-        for img in images:
-            t = pytesseract.image_to_string(img)
-            if t:
-                text_parts.append(t)
-        return "\n".join(text_parts)
+        if OCR_BACKEND == "rapidocr":
+            global _OCR_ENGINE
+            if _OCR_ENGINE is None:
+                _OCR_ENGINE = RapidOCR()
+            document = pypdfium2.PdfDocument(str(pdf_path))
+            try:
+                for page in document:
+                    image = page.render(scale=2.5).to_pil()
+                    result, _ = _OCR_ENGINE(np.asarray(image))
+                    if result:
+                        text_parts.extend(item[1] for item in result if len(item) > 1)
+            finally:
+                document.close()
+        elif OCR_BACKEND == "tesseract":
+            for image in convert_from_path(str(pdf_path), dpi=250):
+                page_text = pytesseract.image_to_string(image)
+                if page_text:
+                    text_parts.append(page_text)
+        text = "\n".join(text_parts).replace("\xa0", " ")
+        _OCR_CACHE[cache_key] = text
+        return text
     except Exception as e:
         print(f"  OCR failed for {pdf_path.name}: {e}")
+        _OCR_CACHE[cache_key] = ""
         return ""
 
 
+def extract_section27_date(text):
+    """Return the dated Section 27 event used to order name changes."""
+    patterns = [
+        r'Date\s+of\s+Application\s*:?\s*(\d{2}/\d{2}/\d{4})',
+        r'Date\s+of\s+Lodgement\s*:?\s*(\d{2}/\d{2}/\d{4})',
+        r'Submission\s+Date\s*:?\s*(\d{2}/\d{2}/\d{4})',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            return parse_date(match.group(1))
+
+    # SSM name-reservation references encode DDMMYYYY after ACN.
+    match = re.search(r'ACN\s*(\d{2})(\d{2})(\d{4})', text, re.I)
+    if match:
+        return parse_date(
+            f"{match.group(1)}/{match.group(2)}/{match.group(3)}"
+        )
+    return None
+
+
+def extract_section27_new_name(text):
+    patterns = [
+        r'Proposed\s+Company\s+Name\s*:?\s*(.+?)(?:\n|$)',
+        r'New\s+Company\s+Name\s*:?\s*(.+?)(?:\n|$)',
+        r'New\s+Name\s*:?\s*(.+?)(?:\n|$)',
+        r'Name\s+of\s+Company\s*:?\s*(.+?)(?:\n|$)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            name = clean(match.group(1))
+            if name:
+                return name
+    return ""
+
+
 def find_section27_new_name(folder):
-    """Find Section 27 (Change of Company Name) PDF and return new name."""
+    """Return the new name from the latest dated Section 27 document."""
+    candidates = []
     for pdf in folder.rglob("*.pdf"):
         name = pdf.name.lower()
         if "section 27" not in name and "sec27" not in name:
@@ -1631,18 +1760,22 @@ def find_section27_new_name(folder):
         text = read_pdf(pdf)
         if "CHANGE OF NAME" not in text.upper() and "CHANGE OF COMPANY NAME" not in text.upper():
             continue
-        # Try various patterns for new name
-        for pat in [
-            r'New\s+name\s+(.+?)(?:\n|$)',
-            r'New\s+Company\s+Name\s+(.+?)(?:\n|$)',
-            r'Name\s+of\s+Company\s+(.+?)(?:\n|$)',
-        ]:
-            m = re.search(pat, text, re.I)
-            if m:
-                new_name = clean(m.group(1))
-                if new_name:
-                    return new_name
-    return ""
+        event_date = extract_section27_date(text)
+        new_name = extract_section27_new_name(text)
+        if event_date and new_name:
+            candidates.append((event_date, new_name, pdf))
+
+    if not candidates:
+        return ""
+
+    latest_date = max(candidate[0] for candidate in candidates)
+    latest = [candidate for candidate in candidates if candidate[0] == latest_date]
+    latest_names = {candidate[1].upper(): candidate[1] for candidate in latest}
+    if len(latest_names) > 1:
+        names = ", ".join(sorted(latest_names.values()))
+        print(f"  Section27 conflict on {latest_date:%d/%m/%Y}: {names}")
+        return ""
+    return next(iter(latest_names.values()))
 
 
 def find_incorporation_date_in_folder(folder):
@@ -1650,12 +1783,12 @@ def find_incorporation_date_in_folder(folder):
     Only checks S14, S17, S51, S58 PDFs (most likely to contain incorporation info)."""
     for pdf in sorted(folder.rglob("*.pdf")):
         name = pdf.name.lower()
-        if not any(kw in name for kw in ["section 14", "section 17", "section 51", "section 58",
-                                           "sec14", "sec17", "sec51", "sec58",
+        if not any(kw in name for kw in ["section 14", "section 17",
+                                           "sec14", "sec17",
                                            "superform 14"]):
             continue
         text = read_pdf(pdf)
-        if not text.strip():
+        if not extract_incorporation_date(text) and OCR_AVAILABLE:
             text = try_ocr_pdf(pdf)
         if text:
             d = extract_incorporation_date(text)
@@ -1711,6 +1844,39 @@ def latest_section68(folder):
     return latest_pdf
 
 
+def save_to_sqlite(df, table_name, db_dir=DB_DIR):
+    """Atomically replace one table while preserving other database tables."""
+    db_dir.mkdir(parents=True, exist_ok=True)
+    db_path = db_dir / "csai_master.db"
+    temp_path = db_dir / ".csai_master.tmp.db"
+
+    if temp_path.exists():
+        temp_path.unlink()
+    if db_path.exists():
+        shutil.copy2(db_path, temp_path)
+
+    connection = sqlite3.connect(temp_path)
+    try:
+        with connection:
+            df.to_sql(table_name, connection, if_exists="replace", index=False)
+    finally:
+        connection.close()
+    os.replace(temp_path, db_path)
+    return db_path
+
+
+def save_outputs(df):
+    """Write Excel and SQLite outputs after extraction has completed."""
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temp_excel = OUTPUT_FILE.with_name(f".{OUTPUT_FILE.stem}.tmp.xlsx")
+    if temp_excel.exists():
+        temp_excel.unlink()
+    df.to_excel(temp_excel, index=False)
+    os.replace(temp_excel, OUTPUT_FILE)
+    db_path = save_to_sqlite(df, "Client_Master")
+    return OUTPUT_FILE, db_path
+
+
 ####################################################
 # MAIN
 ####################################################
@@ -1721,6 +1887,11 @@ if __name__ == "__main__":
 
     for folder in sorted(CLIENT_ROOT.iterdir()):
         if not folder.is_dir():
+            continue
+        if (
+            CLIENT_FILTER_PATTERN
+            and not re.search(CLIENT_FILTER_PATTERN, folder.name, re.I)
+        ):
             continue
         print("Processing :", folder.name)
 
@@ -1790,17 +1961,11 @@ if __name__ == "__main__":
             if pdf51:
                 text51 = read_pdf(pdf51)
                 members_51 = extract_members_section51(text51)
-                # Use PDF-level date for priority decision
-                s51_use = False
-                if base_dt is None and members_51:
-                    s51_use = True
-                elif s51_date_dt is not None and base_dt is not None and s51_date_dt >= base_dt:
-                    s51_use = True
-                # Also check member-level dates (backward compatibility)
-                if not s51_use:
-                    s51_member_dates = [parse_date(m.get("Date", "")) for m in members_51 if m.get("Date")]
-                    if s51_member_dates and (base_dt is None or max(s51_member_dates) >= base_dt):
-                        s51_use = True
+                s51_use = should_use_section51(
+                    s51_date_dt,
+                    base_dt,
+                    members_51,
+                )
                 if s51_use:
                     print(f"  Using Section51 (date {s51_date_str or 'N/A'})")
                     members = []
@@ -1864,12 +2029,6 @@ if __name__ == "__main__":
                 if fallback:
                     row["Incorporate Date"] = fallback
             base_dt = inc_dt
-            if inc_dt:
-                try:
-                    ar_dt_calc = inc_dt.replace(year=inc_dt.year + 1)
-                    row["Annual Return Date"] = ar_dt_calc.strftime("%d/%m/%Y")
-                except ValueError:
-                    pass
             row["Total Issued Shares"] = extract_total_shares_section14(text14)
             row["Date of Lodgement"] = extract_submission_date(text14)
             row["Business Address"] = co["business_address"]
@@ -1919,17 +2078,11 @@ if __name__ == "__main__":
             if pdf51:
                 text51 = read_pdf(pdf51)
                 members_51 = extract_members_section51(text51)
-                # Use PDF-level date for priority decision
-                s51_use = False
-                if base_dt is None and members_51:
-                    s51_use = True
-                elif s51_date_dt is not None and base_dt is not None and s51_date_dt >= base_dt:
-                    s51_use = True
-                # Also check member-level dates (backward compatibility)
-                if not s51_use:
-                    s51_member_dates = [parse_date(m.get("Date", "")) for m in members_51 if m.get("Date")]
-                    if s51_member_dates and (base_dt is None or max(s51_member_dates) >= base_dt):
-                        s51_use = True
+                s51_use = should_use_section51(
+                    s51_date_dt,
+                    base_dt,
+                    members_51,
+                )
                 if s51_use:
                     print(f"  Using Section51 (date {s51_date_str or 'N/A'})")
                     members = []
@@ -2019,11 +2172,11 @@ if __name__ == "__main__":
                 lambda x: str(int(x)) if pd.notna(x) and isinstance(x, float) and x == int(x) else str(x) if pd.notna(x) else ""
             )
 
-    df.to_excel(OUTPUT_FILE, index=False)
     if "UpdatedAt" not in df.columns:
         df["UpdatedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    save_to_sqlite(df, "Client_Master")
+    excel_path, db_path = save_outputs(df)
 
     print(df)
     print("\nDONE")
-    print(OUTPUT_FILE)
+    print(excel_path)
+    print(db_path)

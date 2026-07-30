@@ -2,5 +2,7 @@ pandas
 openpyxl
 python-docx
 pypdf
+pypdfium2
+rapidocr_onnxruntime
 rapidfuzz
 tqdm
