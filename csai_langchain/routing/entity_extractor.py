@@ -1,7 +1,11 @@
+import json
 import re
 
 import pandas as pd
 
+from csai_langchain.config.settings import (
+    COMPANY_ALIASES_FILE,
+)
 from csai_langchain.repositories.company_repository import (
     CompanyRepository,
 )
@@ -126,6 +130,24 @@ class EntityExtractor:
             reverse=True
         )
 
+        ####################################################
+        # Load company aliases
+        ####################################################
+
+        self.company_alias_lookup = (
+            self._load_company_aliases()
+        )
+
+        # Longer aliases should be checked first.
+        self.company_alias_items = sorted(
+            self.company_alias_lookup.items(),
+            key=lambda item: (
+                len(item[0].split()),
+                len(item[0]),
+            ),
+            reverse=True
+        )
+
     ####################################################
     # Normalize
     ####################################################
@@ -183,6 +205,117 @@ class EntityExtractor:
                 and len(token) >= 2
             )
         )
+
+    ####################################################
+    # Load company aliases
+    ####################################################
+
+    def _load_company_aliases(
+        self
+    ):
+
+        if not COMPANY_ALIASES_FILE.exists():
+            return {}
+
+        with COMPANY_ALIASES_FILE.open(
+            "r",
+            encoding="utf-8"
+        ) as file:
+
+            alias_data = json.load(
+                file
+            )
+
+        if not isinstance(
+            alias_data,
+            dict
+        ):
+            raise ValueError(
+                "company_aliases.json must contain "
+                "a JSON object."
+            )
+
+        registered_companies = {
+            item["normalized"]: item["company"]
+            for item in self.company_lookup
+        }
+
+        alias_lookup = {}
+
+        for registered_name, aliases in alias_data.items():
+
+            normalized_registered_name = (
+                self.normalize(
+                    registered_name
+                )
+            )
+
+            canonical_company = (
+                registered_companies.get(
+                    normalized_registered_name
+                )
+            )
+
+            if not canonical_company:
+                raise ValueError(
+                    "Company in company_aliases.json "
+                    "was not found in Client_Master: "
+                    f"{registered_name}"
+                )
+
+            if isinstance(
+                aliases,
+                str
+            ):
+                aliases = [
+                    aliases
+                ]
+
+            if not isinstance(
+                aliases,
+                list
+            ):
+                raise ValueError(
+                    "Aliases for "
+                    f"{registered_name} "
+                    "must be a string or list."
+                )
+
+            for alias in aliases:
+
+                normalized_alias = (
+                    self.normalize(
+                        alias
+                    )
+                )
+
+                if not normalized_alias:
+                    continue
+
+                existing_company = (
+                    alias_lookup.get(
+                        normalized_alias
+                    )
+                )
+
+                if (
+                    existing_company
+                    and existing_company
+                    != canonical_company
+                ):
+                    raise ValueError(
+                        "Duplicate company alias "
+                        "detected: "
+                        f"{alias} maps to both "
+                        f"{existing_company} and "
+                        f"{canonical_company}."
+                    )
+
+                alias_lookup[
+                    normalized_alias
+                ] = canonical_company
+
+        return alias_lookup
 
     ####################################################
     # Company Extraction
@@ -243,6 +376,62 @@ class EntityExtractor:
             return exact_matches[
                 0
             ]["company"]
+
+        ####################################################
+        # Company alias match
+        ####################################################
+
+        alias_matches = []
+
+        for alias, company in (
+            self.company_alias_items
+        ):
+
+            if (
+                f" {alias} "
+                in padded_question
+            ):
+
+                alias_matches.append({
+                    "alias": alias,
+                    "company": company,
+                })
+
+        if alias_matches:
+
+            best_alias_score = (
+                len(
+                    alias_matches[0]["alias"].split()
+                ),
+                len(
+                    alias_matches[0]["alias"]
+                ),
+            )
+
+            best_companies = {
+                item["company"]
+
+                for item in alias_matches
+
+                if (
+                    len(
+                        item["alias"].split()
+                    ),
+                    len(
+                        item["alias"]
+                    ),
+                ) == best_alias_score
+            }
+
+            # Never select randomly when matching is ambiguous.
+            if len(best_companies) == 1:
+                return next(
+                    iter(
+                        best_companies
+                    )
+                )
+
+            return ""
 
         ####################################################
         # Significant-token match

@@ -21,6 +21,17 @@ CLIENT_DB = DB_FOLDER / "csai_master.db"
 EBOS_DB = DB_FOLDER / "ebos_master.db"
 
 ########################################################
+# COMPANY ALIASES
+########################################################
+
+COMPANY_ALIASES_FILE = (
+    ROOT
+    / "csai_langchain"
+    / "config"
+    / "company_aliases.json"
+)
+
+########################################################
 # QDRANT
 ########################################################
 
