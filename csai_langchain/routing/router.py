@@ -1,3 +1,5 @@
+import re
+
 from .patterns import *
 from .entity_extractor import EntityExtractor
 from csai_langchain.domain.intent import Intent
@@ -11,6 +13,56 @@ class Router:
     def detect(self, question):
 
         q = question.lower()
+
+        # Correct only the observed company-word
+        # transpositions used for intent routing. Keep
+        # the original question in the returned Intent.
+        q = re.sub(
+            r"\bcomapnies\b",
+            "companies",
+            q
+        )
+
+        q = re.sub(
+            r"\bcomapny\b",
+            "company",
+            q
+        )
+
+        # combined person relationship status
+        for p in PERSON_STATUS:
+            if p.search(q):
+                return Intent(
+                    intent="person_status",
+                    person=self.extractor.extract_person(
+                        question
+                    ),
+                    question=question
+                )
+
+        # person beneficial-ownership history
+        for p in PERSON_BENEFICIAL_OWNERSHIP:
+            if p.search(q):
+                return Intent(
+                    intent=(
+                        "person_beneficial_ownership"
+                    ),
+                    person=self.extractor.extract_person(
+                        question
+                    ),
+                    question=question
+                )
+
+        # person shareholding
+        for p in PERSON_SHAREHOLDING:
+            if p.search(q):
+                return Intent(
+                    intent="person_shareholding",
+                    person=self.extractor.extract_person(
+                        question
+                    ),
+                    question=question
+                )
 
         # person directorship
         for p in PERSON_DIRECTORSHIP:

@@ -161,22 +161,112 @@ BENEFICIAL_OWNER = [
 PERSON_DIRECTORSHIP = [
 
     re.compile(
+        r"\b(?:list|show|display|provide|get)\b"
+        r".*\bcompan(?:y|ies)\b"
+        r".*\bdirectors?\b",
+        re.I
+    ),
+
+    re.compile(
         r"appointed as director",
         re.I
     ),
 
     re.compile(
-        r"companies?.*director",
+        r"\b(?:which|what)\s+compan(?:y|ies)\b"
+        r".*\bdirectors?\b",
         re.I
     ),
 
     re.compile(
-        r"director.*companies?",
+        r"\bdirectors?\b"
+        r".*\b(?:which|what)\s+compan(?:y|ies)\b",
         re.I
     ),
 
     re.compile(
         r"directorship",
+        re.I
+    ),
+]
+
+PERSON_STATUS = [
+
+    re.compile(
+        r"(?=.*\b(?:directors?|directorship)\b)"
+        r"(?=.*\b(?:bo|beneficial\s+owners?)\b)"
+        r"(?=.*\b(?:shareholders?|members?)\b)",
+        re.I
+    ),
+]
+
+PERSON_BENEFICIAL_OWNERSHIP = [
+
+    re.compile(
+        r"\b(?:list|show|display|provide|get)\b"
+        r".*\bcompan(?:y|ies)\b"
+        r".*\b(?:bo|beneficial\s+"
+        r"(?:owners?|ownership))\b",
+        re.I
+    ),
+
+    re.compile(
+        r"\b(?:which|what)\s+compan(?:y|ies)\b"
+        r".*\b(?:bo|beneficial\s+"
+        r"(?:owners?|ownership))\b",
+        re.I
+    ),
+
+    re.compile(
+        r"\b(?:bo|beneficial\s+"
+        r"(?:owners?|ownership))\b"
+        r".*\b(?:which|what)\s+compan(?:y|ies)\b",
+        re.I
+    ),
+
+    re.compile(
+        r"\b(?:bo|beneficial\s+ownership)\b"
+        r".*\b(?:history|status)\b",
+        re.I
+    ),
+
+    re.compile(
+        r"\b(?:history|status)\b"
+        r".*\b(?:bo|beneficial\s+ownership)\b",
+        re.I
+    ),
+]
+
+PERSON_SHAREHOLDING = [
+
+    re.compile(
+        r"\b(?:list|show|display|provide|get)\b"
+        r".*\bcompan(?:y|ies)\b"
+        r".*\b(?:sharehold(?:ers?|ing)|members?)\b",
+        re.I
+    ),
+
+    re.compile(
+        r"\b(?:which|what)\s+compan(?:y|ies)\b"
+        r".*\b(?:sharehold(?:ers?|ing)|members?)\b",
+        re.I
+    ),
+
+    re.compile(
+        r"\b(?:sharehold(?:ers?|ing)|members?)\b"
+        r".*\b(?:which|what)\s+compan(?:y|ies)\b",
+        re.I
+    ),
+
+    re.compile(
+        r"\b(?:shareholding|shareholder|member)\b"
+        r".*\b(?:history|status)\b",
+        re.I
+    ),
+
+    re.compile(
+        r"\b(?:history|status)\b"
+        r".*\b(?:shareholding|shareholder|member)\b",
         re.I
     ),
 ]

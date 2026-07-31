@@ -313,3 +313,275 @@ class CompanyRepository:
                     break
 
         return results
+
+    ####################################################
+    # Person shareholdings
+    ####################################################
+
+    def get_person_shareholdings(
+        self,
+        person_name
+    ):
+
+        person_name = (
+            person_name
+            or ""
+        ).strip()
+
+        if not person_name:
+            return []
+
+        person = self._normalize(
+            person_name
+        )
+
+        if not person:
+            return []
+
+        results = []
+        seen_companies = set()
+
+        for row in self.get_all_companies():
+
+            for index in range(
+                1,
+                50
+            ):
+
+                name_key = (
+                    f"Member{index} Name"
+                )
+
+                if name_key not in row:
+                    break
+
+                name = row.get(
+                    name_key
+                )
+
+                if (
+                    name is None
+                    or pd.isna(name)
+                    or self._normalize(name)
+                    != person
+                ):
+                    continue
+
+                registration = (
+                    row.get(
+                        "Reg No"
+                    )
+                    or ""
+                )
+                company_name = (
+                    row.get(
+                        "Company Name"
+                    )
+                    or ""
+                )
+                identity = (
+                    str(registration).strip()
+                    or self._normalize(
+                        company_name
+                    )
+                )
+
+                if (
+                    not identity
+                    or identity
+                    in seen_companies
+                ):
+                    break
+
+                seen_companies.add(
+                    identity
+                )
+
+                results.append({
+                    "Company Name": company_name,
+                    "Reg No": registration,
+                    "Status": "Current",
+                    "Type": row.get(
+                        f"Member{index} Type"
+                    ),
+                    "Name": name,
+                    "ID Type": row.get(
+                        f"Member{index} ID Type"
+                    ),
+                    "ID No": row.get(
+                        f"Member{index} ID No"
+                    ),
+                    "Nationality": row.get(
+                        f"Member{index} Nationality"
+                    ),
+                    "Shares": row.get(
+                        f"Member{index} Shares"
+                    ),
+                    "Share Type": row.get(
+                        f"Member{index} Share Type"
+                    ),
+                })
+
+                break
+
+        return sorted(
+            results,
+            key=lambda row: (
+                self._normalize(
+                    row.get(
+                        "Company Name"
+                    )
+                ),
+                str(
+                    row.get(
+                        "Reg No"
+                    )
+                    or ""
+                ),
+            )
+        )
+
+    ####################################################
+    # Person company associations
+    ####################################################
+
+    def get_person_company_associations(
+        self,
+        person_name
+    ):
+
+        person_name = (
+            person_name
+            or ""
+        ).strip()
+
+        person = self._normalize(
+            person_name
+        )
+
+        if not person:
+            return []
+
+        associations = {}
+
+        def identity_for(row):
+
+            registration = str(
+                row.get(
+                    "Reg No"
+                )
+                or ""
+            ).strip()
+
+            return (
+                registration
+                or self._normalize(
+                    row.get(
+                        "Company Name"
+                    )
+                )
+            )
+
+        def get_or_create(row):
+
+            identity = identity_for(
+                row
+            )
+
+            if not identity:
+                return None
+
+            if identity not in associations:
+
+                associations[
+                    identity
+                ] = {
+                    "Company Name": row.get(
+                        "Company Name"
+                    ),
+                    "Reg No": row.get(
+                        "Reg No"
+                    ),
+                    "Status": "Current",
+                    "Name": person,
+                    "Roles": [],
+                }
+
+            return associations[
+                identity
+            ]
+
+        for row in self.get_person_directorship(
+            person
+        ):
+
+            association = get_or_create(
+                row
+            )
+
+            if (
+                association is not None
+                and "Director"
+                not in association["Roles"]
+            ):
+                association[
+                    "Roles"
+                ].append(
+                    "Director"
+                )
+
+        for row in self.get_person_shareholdings(
+            person
+        ):
+
+            association = get_or_create(
+                row
+            )
+
+            if association is None:
+                continue
+
+            if (
+                "Shareholder"
+                not in association["Roles"]
+            ):
+                association[
+                    "Roles"
+                ].append(
+                    "Shareholder"
+                )
+
+            # Member details apply only to companies in
+            # which the person appears in a MemberN group.
+            association.update(
+                row
+            )
+            association[
+                "Roles"
+            ] = [
+                role
+                for role in (
+                    "Director",
+                    "Shareholder",
+                )
+                if role in association[
+                    "Roles"
+                ]
+            ]
+
+        return sorted(
+            associations.values(),
+            key=lambda row: (
+                self._normalize(
+                    row.get(
+                        "Company Name"
+                    )
+                ),
+                str(
+                    row.get(
+                        "Reg No"
+                    )
+                    or ""
+                ),
+            )
+        )

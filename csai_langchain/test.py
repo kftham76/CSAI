@@ -51,6 +51,24 @@ TEST_CASES = [
     },
 
     {
+        "name": "Company members remain shareholders",
+        "question": (
+            "Who are the members of Action Multiple?"
+        ),
+        "expected_intent": "shareholder",
+        "expected_status": "success",
+        "expected_company": (
+            "ACTION MULTIPLE SDN. BHD."
+        ),
+        "expected_count": 1,
+        "expected_result_contains": [
+            {
+                "Name": "LEE MOI TIANG",
+            },
+        ],
+    },
+
+    {
         "name": "Beneficial owners",
         "question": (
             "Beneficial owners of Action Multiple"
@@ -92,6 +110,252 @@ TEST_CASES = [
                 ),
             },
         ],
+    },
+
+    {
+        "name": "Person-first directorship",
+        "question": (
+            "Khor Peng Chai is director of "
+            "what company"
+        ),
+        "expected_intent": "person_directorship",
+        "expected_status": "success",
+        "expected_person": "KHOR PENG CHAI",
+        "expected_count": 11,
+        "expected_sources": [
+            "Client_Master",
+        ],
+    },
+
+    {
+        "name": "Person beneficial-ownership history",
+        "question": (
+            "Khor Peng Chai is what company's BO?"
+        ),
+        "expected_intent": (
+            "person_beneficial_ownership"
+        ),
+        "expected_status": "success",
+        "expected_person": "KHOR PENG CHAI",
+        "expected_count": 23,
+        "expected_sources": [
+            "EBOS_Master",
+        ],
+        "expected_result_contains": [
+            {
+                "Company Name": (
+                    "ACTION MULTIPLE SDN. BHD."
+                ),
+                "BO Status": "NEW",
+                "Name": "KHOR PENG CHAI",
+            },
+            {
+                "Company Name": (
+                    "ACTION MULTIPLE SDN. BHD."
+                ),
+                "BO Status": "CESSATION",
+                "Name": "KHOR PENG CHAI",
+            },
+            {
+                "Company Name": (
+                    "HIGHSCORE TRADING SDN. BHD."
+                ),
+                "Filed Company Name": (
+                    "HIGHSCORE ESTATE SDN. BHD."
+                ),
+                "BO Status": "NEW",
+            },
+        ],
+    },
+
+    {
+        "name": "Person-first beneficial ownership",
+        "question": (
+            "Khor Peng Chai is BO of what company?"
+        ),
+        "expected_intent": (
+            "person_beneficial_ownership"
+        ),
+        "expected_status": "success",
+        "expected_person": "KHOR PENG CHAI",
+        "expected_count": 23,
+        "expected_sources": [
+            "EBOS_Master",
+        ],
+    },
+
+    {
+        "name": "Person company associations",
+        "question": (
+            "Khor Peng Chai is what company's "
+            "shareholder?"
+        ),
+        "expected_intent": "person_shareholding",
+        "expected_status": "success",
+        "expected_person": "KHOR PENG CHAI",
+        "expected_count": 13,
+        "expected_sources": [
+            "Client_Master",
+        ],
+        "expected_unique_result_field": (
+            "Reg No"
+        ),
+        "expected_result_contains": [
+            {
+                "Company Name": (
+                    "ACTION MULTIPLE SDN. BHD."
+                ),
+                "Roles": [
+                    "Director",
+                ],
+            },
+            {
+                "Company Name": (
+                    "CHARTERWAY ENTERPRISE "
+                    "SDN. BHD."
+                ),
+                "Status": "Current",
+                "Roles": [
+                    "Shareholder",
+                ],
+            },
+            {
+                "Company Name": (
+                    "CTW LOGISTICS SDN. BHD."
+                ),
+                "Roles": [
+                    "Director",
+                    "Shareholder",
+                ],
+                "Shares": "2",
+            },
+            {
+                "Company Name": (
+                    "HIGHSCORE TRADING SDN. BHD."
+                ),
+            },
+            {
+                "Company Name": (
+                    "LT JAYA MARKETING SDN. BHD."
+                ),
+            },
+        ],
+    },
+
+    {
+        "name": "Person-first shareholding",
+        "question": (
+            "Khor Peng Chai is shareholder of "
+            "what company"
+        ),
+        "expected_intent": "person_shareholding",
+        "expected_status": "success",
+        "expected_person": "KHOR PENG CHAI",
+        "expected_count": 13,
+        "expected_sources": [
+            "Client_Master",
+        ],
+    },
+
+    {
+        "name": "Person-first member shareholding",
+        "question": (
+            "Khor Peng Chai is member of "
+            "what company"
+        ),
+        "expected_intent": "person_shareholding",
+        "expected_status": "success",
+        "expected_person": "KHOR PENG CHAI",
+        "expected_count": 13,
+        "expected_sources": [
+            "Client_Master",
+        ],
+    },
+
+    {
+        "name": "Reversed person shareholding",
+        "question": (
+            "Khor Peng Chai is a shareholder "
+            "in which companies?"
+        ),
+        "expected_intent": "person_shareholding",
+        "expected_status": "success",
+        "expected_person": "KHOR PENG CHAI",
+        "expected_count": 13,
+        "expected_sources": [
+            "Client_Master",
+        ],
+    },
+
+    {
+        "name": "List person shareholder companies",
+        "question": (
+            "List all the companies that "
+            "Khor Peng Chai is the shareholder"
+        ),
+        "expected_intent": "person_shareholding",
+        "expected_status": "success",
+        "expected_person": "KHOR PENG CHAI",
+        "expected_count": 13,
+        "expected_sources": [
+            "Client_Master",
+        ],
+    },
+
+    {
+        "name": "List person director companies",
+        "question": (
+            "List all the companies that "
+            "Khor Peng Chai is a director"
+        ),
+        "expected_intent": "person_directorship",
+        "expected_status": "success",
+        "expected_person": "KHOR PENG CHAI",
+        "expected_count": 11,
+        "expected_sources": [
+            "Client_Master",
+        ],
+    },
+
+    {
+        "name": "List person BO companies",
+        "question": (
+            "List all the companies that "
+            "Khor Peng Chai is a BO"
+        ),
+        "expected_intent": (
+            "person_beneficial_ownership"
+        ),
+        "expected_status": "success",
+        "expected_person": "KHOR PENG CHAI",
+        "expected_count": 23,
+        "expected_sources": [
+            "EBOS_Master",
+        ],
+    },
+
+    {
+        "name": "Combined person role status",
+        "question": (
+            "Show Khor Peng Chai director, BO "
+            "and shareholder status"
+        ),
+        "expected_intent": "person_status",
+        "expected_status": "success",
+        "expected_person": "KHOR PENG CHAI",
+        "expected_count": 38,
+        "expected_sources": [
+            "Client_Master",
+            "EBOS_Master",
+        ],
+        "expected_result_field_counts": {
+            "field": "Role",
+            "values": {
+                "Director": 11,
+                "Beneficial Owner": 23,
+                "Shareholder": 4,
+            },
+        },
     },
 
     {
@@ -392,6 +656,36 @@ TEST_CASES = [
     },
 
     {
+        "name": "Company-list spelling correction",
+        "question": (
+            "List all the comapnies"
+        ),
+        "expected_intent": "company_list",
+        "expected_status": "success",
+        "expected_count": 80,
+        "expected_sources": [
+            "Client_Master",
+        ],
+    },
+
+    {
+        "name": "Auditor companies spelling correction",
+        "question": (
+            "Which comapnies are under "
+            "Y.H.CHANG & PARTNERS?"
+        ),
+        "expected_intent": "auditor_companies",
+        "expected_status": "success",
+        "expected_auditor": (
+            "Y.H.CHANG & PARTNERS"
+        ),
+        "expected_count": 35,
+        "expected_sources": [
+            "auditors.db:Sheet1",
+        ],
+    },
+
+    {
         "name": "Ambiguous auditor safety test",
         "question": (
             "Which companies are under Thelyx?"
@@ -459,6 +753,30 @@ TEST_CASES = [
         "expected_intent": "director",
         "expected_status": "not_found",
         "expected_company": "",
+        "expected_count": 0,
+    },
+
+    {
+        "name": "Unknown person role safety test",
+        "question": (
+            "Show NON EXISTENT PERSON director, "
+            "BO and shareholder status"
+        ),
+        "expected_intent": "person_status",
+        "expected_status": "not_found",
+        "expected_person": "",
+        "expected_count": 0,
+    },
+
+    {
+        "name": "Unknown directional person safety test",
+        "question": (
+            "NON EXISTENT PERSON is director of "
+            "what company?"
+        ),
+        "expected_intent": "person_directorship",
+        "expected_status": "not_found",
+        "expected_person": "",
         "expected_count": 0,
     },
 ]
@@ -832,6 +1150,39 @@ def run_checks(
                     f"received {actual_value}."
                 )
             )
+
+    expected_field_counts = test_case.get(
+        "expected_result_field_counts"
+    )
+
+    if expected_field_counts:
+
+        field = expected_field_counts[
+            "field"
+        ]
+
+        for value, expected_value in (
+            expected_field_counts[
+                "values"
+            ].items()
+        ):
+
+            actual_value = sum(
+                1
+                for record in actual_records
+                if record.get(field) == value
+            )
+
+            if actual_value != expected_value:
+
+                errors.append(
+                    (
+                        f"Expected {expected_value} "
+                        f"record(s) where '{field}' "
+                        f"is '{value}', received "
+                        f"{actual_value}."
+                    )
+                )
 
     return errors
 

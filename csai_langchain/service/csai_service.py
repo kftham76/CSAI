@@ -12,6 +12,9 @@ from csai_langchain.tools.auditor_tool import AuditorTool
 from csai_langchain.tools.company_list_tool import (
     CompanyListTool,
 )
+from csai_langchain.tools.person_status_tool import (
+    PersonStatusTool,
+)
 
 
 class CSAIService:
@@ -24,6 +27,7 @@ class CSAIService:
         self.person_tool = PersonDirectorshipTool()
         self.auditor_tool = AuditorTool()
         self.company_list_tool = CompanyListTool()
+        self.person_status_tool = PersonStatusTool()
 
         self._closed = False
 
@@ -142,6 +146,176 @@ class CSAIService:
             )
             or ""
         ).strip()
+
+        ################################################
+        # Person beneficial-ownership history
+        ################################################
+
+        if (
+            intent_name
+            == "person_beneficial_ownership"
+        ):
+
+            if not person:
+
+                return self.missing_person_result(
+                    "person_beneficial_ownership"
+                )
+
+            results = (
+                self.person_status_tool
+                .get_beneficial_ownership_history(
+                    person
+                )
+            )
+
+            return SearchResult(
+                status=(
+                    "success"
+                    if results
+                    else "not_found"
+                ),
+                intent=(
+                    "person_beneficial_ownership"
+                ),
+                answer=(
+                    (
+                        f"{person} has "
+                        f"{len(results)} "
+                        "beneficial-ownership "
+                        "history event(s)."
+                    )
+                    if results
+                    else (
+                        "No beneficial-ownership "
+                        "history was found for "
+                        f"{person}."
+                    )
+                ),
+                company="",
+                person=person,
+                auditor="",
+                count=len(results),
+                results=results,
+                sources=(
+                    [
+                        "EBOS_Master"
+                    ]
+                    if results
+                    else []
+                )
+            )
+
+        ################################################
+        # Person shareholding
+        ################################################
+
+        if intent_name == "person_shareholding":
+
+            if not person:
+
+                return self.missing_person_result(
+                    "person_shareholding"
+                )
+
+            results = (
+                self.person_status_tool
+                .get_company_associations(
+                    person
+                )
+            )
+
+            return SearchResult(
+                status=(
+                    "success"
+                    if results
+                    else "not_found"
+                ),
+                intent="person_shareholding",
+                answer=(
+                    (
+                        f"{person} has current director "
+                        "or shareholder associations "
+                        "with "
+                        f"{len(results)} "
+                        "company(ies)."
+                    )
+                    if results
+                    else (
+                        "No current director or "
+                        "shareholder associations "
+                        "were found for "
+                        f"{person}."
+                    )
+                ),
+                company="",
+                person=person,
+                auditor="",
+                count=len(results),
+                results=results,
+                sources=(
+                    [
+                        "Client_Master"
+                    ]
+                    if results
+                    else []
+                )
+            )
+
+        ################################################
+        # Combined person relationship status
+        ################################################
+
+        if intent_name == "person_status":
+
+            if not person:
+
+                return self.missing_person_result(
+                    "person_status"
+                )
+
+            results = (
+                self.person_status_tool
+                .get_combined_status(
+                    person
+                )
+            )
+
+            return SearchResult(
+                status=(
+                    "success"
+                    if results
+                    else "not_found"
+                ),
+                intent="person_status",
+                answer=(
+                    (
+                        f"{len(results)} director, "
+                        "beneficial-owner, and "
+                        "shareholder record(s) "
+                        f"were found for {person}."
+                    )
+                    if results
+                    else (
+                        "No director, beneficial-owner, "
+                        "or shareholder records were "
+                        f"found for {person}."
+                    )
+                ),
+                company="",
+                person=person,
+                auditor="",
+                count=len(results),
+                results=results,
+                sources=(
+                    [
+                        "Client_Master",
+                        "EBOS_Master",
+                    ]
+                    if results
+                    else []
+                )
+            )
 
         ################################################
         # Company to auditor

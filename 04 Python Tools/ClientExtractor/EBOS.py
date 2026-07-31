@@ -1,18 +1,24 @@
 from pathlib import Path
 from pypdf import PdfReader
 import pandas as pd
-import openpyxl
-from openpyxl.styles import Font
+from collections import Counter
 import re
 import warnings
 from datetime import datetime
 import sqlite3
+import os
+import shutil
 
 warnings.filterwarnings("ignore", category=UserWarning, module="pypdf")
 
 CLIENT_ROOT = Path(r"D:\CSAI_CLIENTS")
-OUTPUT_FILE = Path(r"D:\CSAI_DATA\Database\Ebos data.xlsx")
-DB_DIR = Path(r"C:\CSAI_OS\04 Python Tools\DB")
+OUTPUT_FILE = Path(r"C:\CSAI_OS\04 Python Tools\DB\ebos_master.db")
+DB_DIR = Path(
+    os.environ.get(
+        "CSAI_DB_DIR",
+        r"C:\CSAI_OS\04 Python Tools\DB",
+    )
+)
 
 # All columns in output order
 COLUMNS = [
@@ -66,6 +72,26 @@ COLUMNS = [
     "Practising Cert No",
     "Professional Body Type",
     "License / Membership No",
+]
+
+BASE_COLUMNS = [
+    "Company",
+    "Company Name",
+    "Company No",
+    "Company Status",
+]
+
+EVENT_COLUMNS = [
+    column
+    for column in COLUMNS
+    if column != "Client"
+]
+
+EVENT_DATE_PRIORITY = [
+    "Date Received",
+    "PDF Date",
+    "Date of Application",
+    "Date of Data Recorded",
 ]
 
 
@@ -396,6 +422,18 @@ def extract_lodger_info(text):
 def find_ebos_pdfs(folder):
     """Find EBOS PDFs. Prefer E-BOS/E-Bos folder if exists."""
 
+    def matching_pdfs(search_root):
+
+        return sorted(
+            path
+            for path in search_root.rglob("*")
+            if (
+                path.is_file()
+                and path.suffix.lower() == ".pdf"
+                and "EBOS" in path.name.upper()
+            )
+        )
+
     # Check for E-BOS / E-Bos / E-Bos folder
     ebos_folder = None
     for candidate in folder.iterdir():
@@ -404,12 +442,16 @@ def find_ebos_pdfs(folder):
             break
 
     if ebos_folder:
-        pdfs = sorted(ebos_folder.rglob("*EBOS*"))
+        pdfs = matching_pdfs(
+            ebos_folder
+        )
         if pdfs:
             return pdfs
 
     # Fallback: search whole folder
-    return sorted(folder.rglob("*EBOS*"))
+    return matching_pdfs(
+        folder
+    )
 
 
 ####################################################
@@ -527,47 +569,452 @@ def process_pdf(pdf):
 # EBOS SHEET WRITER
 ####################################################
 
-def save_to_sqlite(df, table_name):
-    DB_DIR.mkdir(parents=True, exist_ok=True)
-    db_path = DB_DIR / "ebos_master.db"
-    conn = sqlite3.connect(str(db_path))
-    df.to_sql(table_name, conn, if_exists="replace", index=False)
-    conn.close()
-    print(f"SQLite updated : {table_name}")
+def clean_value(value):
+    """Return a stable text value, treating missing values as blank."""
+
+    if value is None or pd.isna(value):
+        return ""
+
+    return str(value).strip()
 
 
-def write_ebos_sheet(writer, all_rows):
-    """Write ALL companies' EBOS data to a single Excel sheet.
-       Sorted by Client then PDF date. Auto-filter enabled."""
+def normalize_key(value):
+    """Normalize a company identity fallback without changing display text."""
 
-    if not all_rows:
-        return
+    value = clean_value(value).upper()
+    value = re.sub(r"[^A-Z0-9\s]", " ", value)
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()
 
-    df = pd.DataFrame(all_rows, columns=COLUMNS)
 
-    # Sort by Client, then PDF Date
-    df = df.sort_values(["Client", "PDF Date"], ascending=[True, True]).reset_index(drop=True)
+def parse_event_date(row):
+    """Return the first usable event date based on filing-date priority."""
 
-    # Ensure string columns stored as strings (prevent Excel float .0 / leading zero loss)
-    str_cols = ["IC", "Lodger IC", "Contact No", "Lodger Phone No", "Practising Cert No"]
-    for col in str_cols:
-        if col in df.columns:
-            df[col] = df[col].apply(
-                lambda x: str(x) if pd.notna(x) else ""
+    for column in EVENT_DATE_PRIORITY:
+        value = clean_value(row.get(column))
+
+        if not value:
+            continue
+
+        parsed = pd.to_datetime(
+            value,
+            errors="coerce",
+            dayfirst=True,
+        )
+
+        if not pd.isna(parsed):
+            return parsed.to_pydatetime()
+
+    return None
+
+
+def event_sort_key(row):
+    """Sort newest dated events first and undated events last."""
+
+    parsed = parse_event_date(row)
+
+    return (
+        0 if parsed else 1,
+        -parsed.timestamp() if parsed else 0,
+        clean_value(row.get("Submission No")).upper(),
+        clean_value(row.get("Source PDF")).upper(),
+    )
+
+
+def most_frequent_value(rows, column):
+    """Choose the most frequent spelling, using first occurrence as a tie-break."""
+
+    values = [
+        clean_value(row.get(column))
+        for row in rows
+        if clean_value(row.get(column))
+    ]
+
+    if not values:
+        return ""
+
+    counts = Counter(values)
+    highest_count = max(counts.values())
+
+    return next(
+        value
+        for value in values
+        if counts[value] == highest_count
+    )
+
+
+def event_fingerprint(row):
+    """Identify one logical BO event while ignoring duplicate source filenames."""
+
+    return tuple(
+        clean_value(row.get(column))
+        for column in EVENT_COLUMNS
+        if column != "Source PDF"
+    )
+
+
+def company_group_key(row):
+    """Use registration number as company identity, with safe fallbacks."""
+
+    company_no = clean_value(row.get("Company No"))
+
+    if company_no:
+        return f"REG:{company_no.upper()}"
+
+    company = normalize_key(row.get("Client"))
+
+    if company:
+        return f"COMPANY:{company}"
+
+    return (
+        "NAME:"
+        + normalize_key(row.get("Company Name"))
+    )
+
+
+def consolidate_ebos_rows(all_rows):
+    """Convert the long event list into one wide row per registered company."""
+
+    groups = {}
+
+    for original_row in all_rows:
+        row = {
+            column: clean_value(
+                original_row.get(column)
+            )
+            for column in COLUMNS
+        }
+
+        key = company_group_key(row)
+        groups.setdefault(key, []).append(row)
+
+    consolidated_groups = []
+    raw_event_count = len(all_rows)
+    logical_event_count = 0
+    maximum_event_count = 0
+
+    for rows in groups.values():
+        logical_events = {}
+
+        for row in rows:
+            fingerprint = event_fingerprint(row)
+            existing = logical_events.get(
+                fingerprint
             )
 
-    df.to_excel(writer, sheet_name="EBOS Data", index=False)
+            if (
+                existing is None
+                or clean_value(
+                    row.get("Source PDF")
+                ).upper()
+                < clean_value(
+                    existing.get("Source PDF")
+                ).upper()
+            ):
+                logical_events[
+                    fingerprint
+                ] = row
 
-    if "UpdatedAt" not in df.columns:
-        df["UpdatedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    save_to_sqlite(df, "EBOS_Master")
+        events = sorted(
+            logical_events.values(),
+            key=event_sort_key,
+        )
 
-    # Bold header + auto-filter
-    wb = writer.book
-    ws = wb["EBOS Data"]
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-    ws.auto_filter.ref = ws.dimensions
+        logical_event_count += len(events)
+        maximum_event_count = max(
+            maximum_event_count,
+            len(events),
+        )
+
+        latest_named_event = next(
+            (
+                event
+                for event in events
+                if clean_value(
+                    event.get("Company Name")
+                )
+            ),
+            {},
+        )
+
+        latest_status_event = next(
+            (
+                event
+                for event in events
+                if clean_value(
+                    event.get("Company Status")
+                )
+            ),
+            {},
+        )
+
+        consolidated_groups.append({
+            "base": {
+                "Company": most_frequent_value(
+                    rows,
+                    "Client",
+                ),
+                "Company Name": clean_value(
+                    latest_named_event.get(
+                        "Company Name"
+                    )
+                ),
+                "Company No": most_frequent_value(
+                    rows,
+                    "Company No",
+                ),
+                "Company Status": clean_value(
+                    latest_status_event.get(
+                        "Company Status"
+                    )
+                ),
+            },
+            "events": events,
+        })
+
+    columns = list(BASE_COLUMNS)
+
+    for index in range(
+        1,
+        maximum_event_count + 1,
+    ):
+        columns.extend(
+            f"BO{index} {column}"
+            for column in EVENT_COLUMNS
+        )
+
+    columns.append("UpdatedAt")
+    updated_at = datetime.now().strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    output_rows = []
+
+    for group in consolidated_groups:
+        output_row = dict(group["base"])
+
+        for index, event in enumerate(
+            group["events"],
+            start=1,
+        ):
+            for column in EVENT_COLUMNS:
+                output_row[
+                    f"BO{index} {column}"
+                ] = clean_value(
+                    event.get(column)
+                )
+
+        output_row["UpdatedAt"] = updated_at
+        output_rows.append(output_row)
+
+    output_rows.sort(
+        key=lambda row: (
+            normalize_key(
+                row.get("Company Name")
+            ),
+            clean_value(
+                row.get("Company No")
+            ),
+        )
+    )
+
+    dataframe = pd.DataFrame(
+        output_rows,
+        columns=columns,
+    )
+
+    dataframe = dataframe.replace(
+        {
+            "": None,
+        }
+    )
+
+    statistics = {
+        "raw_events": raw_event_count,
+        "logical_events": logical_event_count,
+        "duplicates_removed": (
+            raw_event_count
+            - logical_event_count
+        ),
+        "company_rows": len(output_rows),
+        "maximum_bo_slots": maximum_event_count,
+    }
+
+    return dataframe, statistics
+
+
+def write_excel_atomic(dataframe):
+    """Atomically replace the EBOS workbook with the consolidated output."""
+
+    OUTPUT_FILE.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    temp_path = OUTPUT_FILE.with_name(
+        f".{OUTPUT_FILE.stem}.tmp.xlsx"
+    )
+
+    if temp_path.exists():
+        temp_path.unlink()
+
+    try:
+        dataframe.to_excel(
+            temp_path,
+            sheet_name="EBOS Data",
+            index=False,
+        )
+
+        os.replace(
+            temp_path,
+            OUTPUT_FILE,
+        )
+
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def replace_sqlite_table_transactional(
+    dataframe,
+    database_path,
+    table_name,
+):
+    """Swap a validated staging table when Windows locks the database file."""
+
+    staging_table = (
+        f"__sync_{table_name}"
+    )
+    connection = sqlite3.connect(
+        str(database_path),
+        timeout=30,
+    )
+
+    try:
+        connection.execute(
+            f"DROP TABLE IF EXISTS [{staging_table}]"
+        )
+        connection.commit()
+
+        dataframe.to_sql(
+            staging_table,
+            connection,
+            if_exists="replace",
+            index=False,
+        )
+
+        staging_columns = [
+            row[1]
+            for row in connection.execute(
+                f"PRAGMA table_info([{staging_table}])"
+            )
+        ]
+        staging_rows = connection.execute(
+            f"SELECT COUNT(*) FROM [{staging_table}]"
+        ).fetchone()[0]
+
+        if staging_columns != list(dataframe.columns):
+            raise RuntimeError(
+                f"Column validation failed for {table_name}."
+            )
+
+        if staging_rows != len(dataframe):
+            raise RuntimeError(
+                f"Row-count validation failed for {table_name}: "
+                f"expected {len(dataframe)}, imported "
+                f"{staging_rows}."
+            )
+
+        try:
+            connection.execute(
+                "BEGIN IMMEDIATE"
+            )
+            connection.execute(
+                f"DROP TABLE IF EXISTS [{table_name}]"
+            )
+            connection.execute(
+                f"ALTER TABLE [{staging_table}] "
+                f"RENAME TO [{table_name}]"
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    finally:
+        try:
+            connection.execute(
+                f"DROP TABLE IF EXISTS [{staging_table}]"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+
+def save_to_sqlite_atomic(
+    dataframe,
+    table_name,
+):
+    """Atomically replace one SQLite table while preserving other tables."""
+
+    DB_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    database_path = (
+        DB_DIR
+        / "ebos_master.db"
+    )
+    temp_path = (
+        DB_DIR
+        / ".ebos_master.tmp.db"
+    )
+
+    if temp_path.exists():
+        temp_path.unlink()
+
+    if database_path.exists():
+        shutil.copy2(
+            database_path,
+            temp_path,
+        )
+
+    try:
+        connection = sqlite3.connect(
+            str(temp_path)
+        )
+
+        try:
+            with connection:
+                dataframe.to_sql(
+                    table_name,
+                    connection,
+                    if_exists="replace",
+                    index=False,
+                )
+        finally:
+            connection.close()
+
+        try:
+            os.replace(
+                temp_path,
+                database_path,
+            )
+        except PermissionError:
+            replace_sqlite_table_transactional(
+                dataframe,
+                database_path,
+                table_name,
+            )
+
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+    print(
+        "SQLite updated : "
+        f"{database_path} ({table_name})"
+    )
 
 
 ####################################################
@@ -634,16 +1081,55 @@ def main():
         print("No company data to export.")
         return
 
-    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    dataframe, statistics = (
+        consolidate_ebos_rows(
+            all_rows
+        )
+    )
 
-    print(f"\nWriting Excel to {OUTPUT_FILE}...")
+    print()
+    print(
+        "Raw BO events        :",
+        statistics["raw_events"],
+    )
+    print(
+        "Logical BO events    :",
+        statistics["logical_events"],
+    )
+    print(
+        "Duplicates removed   :",
+        statistics["duplicates_removed"],
+    )
+    print(
+        "Company rows         :",
+        statistics["company_rows"],
+    )
+    print(
+        "Maximum BO slots     :",
+        statistics["maximum_bo_slots"],
+    )
 
-    with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
-        write_ebos_sheet(writer, all_rows)
+    print(
+        f"\nWriting Excel to {OUTPUT_FILE}..."
+    )
+
+    write_excel_atomic(
+        dataframe
+    )
+
+    save_to_sqlite_atomic(
+        dataframe,
+        "EBOS_Master",
+    )
 
     print("Done.")
-    companies = len(set(r.get("Client", "") for r in all_rows))
-    print(f"Total: {len(all_rows)} row(s) across {companies} company(ies).")
+    print(
+        "Total: "
+        f"{statistics['company_rows']} "
+        "company row(s), "
+        f"{statistics['logical_events']} "
+        "logical BO event(s)."
+    )
 
 
 if __name__ == "__main__":

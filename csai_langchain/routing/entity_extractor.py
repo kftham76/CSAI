@@ -12,6 +12,9 @@ from csai_langchain.repositories.company_repository import (
 from csai_langchain.repositories.auditor_repository import (
     AuditorRepository,
 )
+from csai_langchain.repositories.ebos_repository import (
+    EBOSRepository,
+)
 
 
 class EntityExtractor:
@@ -33,6 +36,7 @@ class EntityExtractor:
 
         self.repo = CompanyRepository()
         self.auditor_repo = AuditorRepository()
+        self.ebos_repo = EBOSRepository()
 
         companies = self.repo.get_all_companies()
         auditor_companies = (
@@ -107,6 +111,61 @@ class EntityExtractor:
                     self.people.add(
                         name
                     )
+
+            ####################################################
+            # Shareholder/member lookup
+            ####################################################
+
+            for index in range(
+                1,
+                50
+            ):
+
+                key = (
+                    f"Member{index} Name"
+                )
+
+                if key not in row:
+                    break
+
+                name = row.get(
+                    key
+                )
+
+                if (
+                    name is None
+                    or pd.isna(name)
+                ):
+                    continue
+
+                name = self.normalize(
+                    str(name)
+                )
+
+                if name:
+
+                    self.people.add(
+                        name
+                    )
+
+        ####################################################
+        # Beneficial-owner lookup
+        ####################################################
+
+        for name in (
+            self.ebos_repo
+            .get_all_person_names()
+        ):
+
+            normalized_name = self.normalize(
+                name
+            )
+
+            if normalized_name:
+
+                self.people.add(
+                    normalized_name
+                )
 
         ####################################################
         # Store unique company records
