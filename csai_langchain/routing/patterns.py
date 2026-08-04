@@ -97,6 +97,23 @@ AUDITOR_LIST = [
     ),
 ]
 
+AUDITOR_COMPANY_LIST = [
+
+    re.compile(
+        r"\b(?:all|every|each)\b.*"
+        r"\bauditor\b.*"
+        r"\b(?:data|records?)\b",
+        re.I
+    ),
+
+    re.compile(
+        r"\b(?:all|every|each)\b.*"
+        r"\bcompan(?:y|ies)\b.*"
+        r"\bauditors?\b",
+        re.I
+    ),
+]
+
 AUDITOR_COMPANIES = [
 
     re.compile(
@@ -129,6 +146,91 @@ AUDITOR = [
     ),
 ]
 
+FINANCIAL_YEAR_END = [
+
+    re.compile(
+        r"\bfinancial"
+        r"(?:\s*-\s*|\s+)"
+        r"year"
+        r"(?:\s*-\s*|\s+)"
+        r"end\b",
+        re.I
+    ),
+
+    re.compile(
+        r"\bfye\b",
+        re.I
+    ),
+]
+
+ANNUAL_RETURN = [
+
+    re.compile(
+        r"\bann?ual\s+"
+        r"ret(?:ur|ru)ns?\b",
+        re.I
+    ),
+
+    re.compile(
+        r"\bar\s+dates?\b",
+        re.I
+    ),
+]
+
+COMPANY_DATA = [
+
+    re.compile(
+        r"\b(?:all|complete|full)\b.*"
+        r"\b(?:company|client)\b.*"
+        r"\b(?:data|records?)\b",
+        re.I
+    ),
+
+    re.compile(
+        r"\bclient\s+master\b",
+        re.I
+    ),
+]
+
+COMPANY_INFORMATION = [
+
+    re.compile(
+        r"\b(?:company\s+)?"
+        r"(?:information|info|details|profile)\b",
+        re.I
+    ),
+
+    re.compile(
+        r"\btell\s+me\s+about\b",
+        re.I
+    ),
+]
+
+EXTRACTION_ISSUES = [
+
+    re.compile(
+        r"\bextraction\s+"
+        r"(?:issues?|errors?|warnings?)\b",
+        re.I
+    ),
+]
+
+STATUTORY_DOCUMENTS = [
+
+    re.compile(
+        r"\bstatutory\s+documents?\b",
+        re.I
+    ),
+]
+
+STATUTORY_EVENTS = [
+
+    re.compile(
+        r"\bstatutory\s+events?\b",
+        re.I
+    ),
+]
+
 COMPANY_LIST = [
 
     re.compile(
@@ -149,6 +251,11 @@ BENEFICIAL_OWNER = [
 
     re.compile(
         r"beneficial owner",
+        re.I
+    ),
+
+    re.compile(
+        r"\bebos\b",
         re.I
     ),
 

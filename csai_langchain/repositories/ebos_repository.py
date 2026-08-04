@@ -228,9 +228,17 @@ class EBOSRepository:
                 "Company No"
             )
             events[
+                "_master_company_status"
+            ] = events.get(
+                "Company Status"
+            )
+            events[
                 "_master_company"
             ] = events.get(
-                "Client"
+                "Company",
+                events.get(
+                    "Client"
+                )
             )
             events[
                 "_master_order"
@@ -255,6 +263,9 @@ class EBOSRepository:
             )
             master_company_no = row.get(
                 "Company No"
+            )
+            master_company_status = row.get(
+                "Company Status"
             )
 
             for event_index in sorted(
@@ -303,6 +314,9 @@ class EBOSRepository:
                 event[
                     "_master_company_no"
                 ] = master_company_no
+                event[
+                    "_master_company_status"
+                ] = master_company_status
                 event[
                     "_master_company"
                 ] = row.get(
@@ -363,6 +377,39 @@ class EBOSRepository:
         return list(
             people.values()
         )
+
+    def get_all_company_names(self):
+
+        events = self.get_all_events()
+
+        if (
+            events.empty
+            or "Company Name" not in events.columns
+        ):
+            return []
+
+        companies = {}
+
+        for value in events["Company Name"]:
+
+            if not self.has_value(value):
+                continue
+
+            display_name = str(value).strip()
+            normalized_name = self.normalize(
+                display_name
+            )
+
+            if normalized_name:
+                companies.setdefault(
+                    normalized_name,
+                    display_name,
+                )
+
+        return [
+            {"Company Name": company}
+            for company in companies.values()
+        ]
 
     ####################################################
     # Match company
@@ -524,7 +571,8 @@ class EBOSRepository:
 
     def get_current_beneficial_owners(
         self,
-        company_name
+        company_name,
+        _all_records=False
     ):
 
         df = self.get_all_events()
@@ -535,10 +583,12 @@ class EBOSRepository:
         if "Company Name" not in df.columns:
             return []
 
-        df = self.match_company_rows(
-            df,
-            company_name
-        )
+        if not _all_records:
+
+            df = self.match_company_rows(
+                df,
+                company_name
+            )
 
         if df.empty:
             return []
@@ -681,6 +731,36 @@ class EBOSRepository:
         if df.empty:
             return []
 
+        if _all_records:
+
+            company_number = (
+                df.get(
+                    "_master_company_no",
+                    pd.Series("", index=df.index)
+                )
+                .fillna("")
+                .astype(str)
+                .str.strip()
+            )
+
+            company_name_values = (
+                df.get(
+                    "_master_company_name",
+                    df.get(
+                        "Company Name",
+                        pd.Series("", index=df.index)
+                    )
+                )
+                .apply(self.normalize)
+            )
+
+            df["_company_identity"] = (
+                company_number.where(
+                    company_number != "",
+                    company_name_values
+                )
+            )
+
         ################################################
         # BO status
         ################################################
@@ -798,9 +878,19 @@ class EBOSRepository:
             ]
         )
 
+        group_columns = [
+            "_identity"
+        ]
+
+        if _all_records:
+            group_columns.insert(
+                0,
+                "_company_identity"
+            )
+
         latest = (
             df.groupby(
-                "_identity",
+                group_columns,
                 sort=False,
                 dropna=False
             )
@@ -818,6 +908,33 @@ class EBOSRepository:
 
         if latest.empty:
             return []
+
+        ################################################
+        # Expose company-level metadata
+        ################################################
+
+        company_metadata = {
+            "Company": "_master_company",
+            "Master Company Name": (
+                "_master_company_name"
+            ),
+            "Master Company No": (
+                "_master_company_no"
+            ),
+            "Master Company Status": (
+                "_master_company_status"
+            ),
+        }
+
+        for output_column, helper_column in (
+            company_metadata.items()
+        ):
+
+            latest[output_column] = (
+                latest[helper_column]
+                if helper_column in latest.columns
+                else None
+            )
 
         ################################################
         # Remove helper columns
@@ -840,10 +957,19 @@ class EBOSRepository:
         # Stable output ordering
         ################################################
 
-        if "Name" in latest.columns:
+        sort_columns = [
+            column
+            for column in (
+                "Master Company Name",
+                "Name",
+            )
+            if column in latest.columns
+        ]
+
+        if sort_columns:
 
             latest = latest.sort_values(
-                "Name",
+                sort_columns,
                 na_position="last"
             )
 
@@ -858,6 +984,13 @@ class EBOSRepository:
 
         return latest.to_dict(
             orient="records"
+        )
+
+    def get_all_current_beneficial_owners(self):
+
+        return self.get_current_beneficial_owners(
+            "",
+            _all_records=True
         )
 
     ####################################################

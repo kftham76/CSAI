@@ -13,7 +13,7 @@ class AuditorRepository:
 
     TABLE_NAME = "Sheet1"
 
-    RESULT_COLUMNS = [
+    REQUIRED_COLUMNS = [
         "Company Name",
         "Reg No",
         "Financial Year End",
@@ -213,7 +213,7 @@ class AuditorRepository:
             missing = [
                 column
 
-                for column in self.RESULT_COLUMNS
+                for column in self.REQUIRED_COLUMNS
 
                 if column not in columns
             ]
@@ -225,15 +225,9 @@ class AuditorRepository:
                     f"column(s): {missing}"
                 )
 
-            selected_columns = ", ".join(
-                f'"{column}"'
-                for column in self.RESULT_COLUMNS
-            )
-
             return pd.read_sql_query(
                 (
-                    f"SELECT {selected_columns} "
-                    f'FROM "{self.TABLE_NAME}"'
+                    f'SELECT * FROM "{self.TABLE_NAME}"'
                 ),
                 connection
             )
@@ -433,12 +427,17 @@ class AuditorRepository:
     ):
 
         records = []
+        result_columns = [
+            column
+            for column in frame.columns
+            if not column.startswith("_")
+        ]
 
         for _, row in frame.iterrows():
 
             record = {}
 
-            for column in self.RESULT_COLUMNS:
+            for column in result_columns:
 
                 value = row.get(
                     column
@@ -464,6 +463,37 @@ class AuditorRepository:
 
         return records
 
+    ####################################################
+    # Normalize financial year end
+    ####################################################
+
+    @staticmethod
+    def normalize_financial_year_end(value):
+
+        if (
+            value is None
+            or pd.isna(value)
+        ):
+            return ""
+
+        value = str(
+            value
+        ).upper()
+
+        value = re.sub(
+            r"[^A-Z0-9\s]",
+            " ",
+            value
+        )
+
+        value = re.sub(
+            r"\s+",
+            " ",
+            value
+        )
+
+        return value.strip()
+
     def get_all_records(self):
 
         frame = self._read_all()
@@ -475,6 +505,60 @@ class AuditorRepository:
             self._with_auditor_groups(
                 frame
             )
+        )
+
+    def get_all_company_records(self):
+
+        frame = self._with_auditor_groups(
+            self._read_all()
+        )
+
+        if frame.empty:
+            return []
+
+        frame = frame.drop_duplicates(
+            subset=[
+                "_company_identity"
+            ],
+            keep="first"
+        )
+
+        frame = frame.sort_values(
+            "Company Name",
+            na_position="last"
+        )
+
+        return self._records(
+            frame
+        )
+
+    @staticmethod
+    def _project_company_information(rows, fields):
+
+        columns = ["Company Name"]
+
+        for field in fields:
+
+            if (
+                field != "Company Name"
+                and field not in columns
+            ):
+                columns.append(field)
+
+        return [
+            {
+                column: row.get(column)
+                for column in columns
+                if column in row
+            }
+            for row in rows
+        ]
+
+    def get_all_company_information(self, fields):
+
+        return self._project_company_information(
+            self.get_all_company_records(),
+            fields,
         )
 
     ####################################################
@@ -542,6 +626,17 @@ class AuditorRepository:
             matches
         )
 
+    def get_company_information(
+        self,
+        company_name,
+        fields,
+    ):
+
+        return self._project_company_information(
+            self.get_auditor_for_company(company_name),
+            fields,
+        )
+
     ####################################################
     # Auditor to companies
     ####################################################
@@ -596,6 +691,69 @@ class AuditorRepository:
             frame["_auditor_key"]
             == key
         ].copy()
+
+        matches = matches.drop_duplicates(
+            subset=[
+                "_company_identity"
+            ],
+            keep="first"
+        )
+
+        matches = matches.sort_values(
+            "Company Name",
+            na_position="last"
+        )
+
+        return self._records(
+            matches
+        )
+
+    ####################################################
+    # Financial year end to companies
+    ####################################################
+
+    def get_companies_by_financial_year_end(
+        self,
+        financial_year_end
+    ):
+
+        target = self.normalize_financial_year_end(
+            financial_year_end
+        )
+
+        if not target:
+            return []
+
+        frame = self._with_auditor_groups(
+            self._read_all()
+        )
+
+        normalized_values = (
+            frame["Financial Year End"]
+            .apply(
+                self.normalize_financial_year_end
+            )
+        )
+
+        if " " in target:
+
+            matches = frame[
+                normalized_values == target
+            ].copy()
+
+        else:
+
+            matches = frame[
+                normalized_values.eq(target)
+                |
+                normalized_values.str.endswith(
+                    f" {target}",
+                    na=False
+                )
+            ].copy()
+
+        if matches.empty:
+            return []
 
         matches = matches.drop_duplicates(
             subset=[

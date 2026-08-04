@@ -670,6 +670,251 @@ class EventStrategyTests(unittest.TestCase):
                 {item["Code"] for item in issues},
             )
 
+    def test_legacy_director_change_rows_apply_only_dated_fields(self):
+        text = """
+        SECTION A: CHANGE IN THE PARTICULAR OF DIRECTOR
+        Identification Number 820704075689 Date of Change : NIL
+        Name LIM JIN HENG Date of Change : NIL
+        Residential Address
+        21 LORONG PERDA TIMUR 8 BANDAR PERDA 14000 BUKIT MERTAJAM
+        PULAU PINANG MALAYSIA
+        Date of Change : 30/05/2026
+        PARTICULARS OF LODGER
+        """
+        diagnostics = []
+        events = extractor.extract_director_updates_section58(
+            text, diagnostics
+        )
+        self.assertEqual(diagnostics, [])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["Event Date"], "30/05/2026")
+        self.assertEqual(events[0]["Changed Fields"], ["Residential"])
+        self.assertEqual(
+            events[0]["Residential"],
+            (
+                "21 LORONG PERDA TIMUR 8 BANDAR PERDA 14000 "
+                "BUKIT MERTAJAM PULAU PINANG MALAYSIA"
+            ),
+        )
+
+    def test_legacy_change_supports_multiple_people_and_identity_rekey(self):
+        text = """
+        SECTION A: CHANGE IN THE PARTICULAR OF DIRECTOR
+        Identification Number 700402085789 Date of Change : NIL
+        Name CHANG CHIANG HOCK Date of Change : NIL
+        Residential Address A05-06 ARTE CONDOMINIUM Date of Change : 03/06/2025
+        Service Address A05-06 ARTE CONDOMINIUM Date of Change : 03/06/2025
+        Identification Number D20217832 Date of Change : 24/03/2025
+        Passport No. Expiry Date 24/03/2032 Date of Change : 24/03/2025
+        Name LI CHUNZHEN Date of Change : NIL
+        PARTICULARS OF LODGER
+        """
+        events = extractor.extract_director_updates_section58(text)
+        self.assertEqual(len(events), 2)
+        changed = {event["Name"]: event for event in events}
+        self.assertEqual(
+            changed["CHANG CHIANG HOCK"]["Changed Fields"],
+            ["Residential", "Service Address"],
+        )
+        self.assertEqual(changed["LI CHUNZHEN"]["IC"], "D20217832")
+        self.assertEqual(
+            changed["LI CHUNZHEN"]["Passport Expiry"], "24/03/2032"
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory) / "Company"
+            folder.mkdir()
+            annual_return = filing(
+                folder,
+                "S68",
+                datetime(2025, 1, 1),
+                directors=[director("LI CHUNZHEN", "OLDPASSPORT")],
+            )
+            update = filing(
+                folder,
+                "S58",
+                datetime(2025, 3, 24),
+                events=[changed["LI CHUNZHEN"]],
+            )
+            row, _, _ = extractor.resolve_company_event_aware(
+                folder, [annual_return, update]
+            )
+            self.assertEqual(row["Director1 IC"], "D20217832")
+
+    def test_modern_section58_1_add_and_cease_timeline(self):
+        text = """
+        Section 58(1)
+        Submitted Date 30-07-2026
+        DIRECTORS
+        ADD DIRECTOR
+        Personal Details
+        Name KHOR SU JIN
+        Identification Type MYKAD
+        Identification No. 910618075198
+        Nationality Country MALAYSIA
+        Citizenship MALAYSIAN
+        Date of Birth 18-06-1991
+        Additional Personal Details
+        Race CHINESE
+        Gender Female
+        Contact Information
+        Residential Address NO. 3355 JALAN ROZHAN
+        Service Address NO. 3355 JALAN ROZHAN
+        Phone Number 0195408491
+        Email Address sujin@example.com
+        Other Information
+        Date of Appointment 28-07-2026
+        CEASE DIRECTOR
+        Record Details
+        Name KHOR PENG CHAI
+        Identification Type MYKAD
+        Identification No. 531003075415
+        Cessation of Director
+        Type of Cessation Resigned
+        Other Information
+        Date of Cessation 29-07-2026
+        CEASE DIRECTOR
+        Record Details
+        Name KHOR KIAN ZHEN
+        Identification Type MYKAD
+        Identification No. 031113070753
+        Cessation of Director
+        Type of Cessation Resigned
+        Other Information
+        Date of Cessation 29-07-2026
+        CEASE DIRECTOR
+        Record Details
+        Name LEE MOI TIANG
+        Identification Type MYKAD
+        Identification No. 580116075412
+        Cessation of Director
+        Type of Cessation Resigned
+        Other Information
+        Date of Cessation 29-07-2026
+        LODGER INFORMATION
+        """
+        events = extractor.extract_modern_section58_events(text)
+        self.assertEqual(len(events), 4)
+        self.assertEqual(
+            [event["Event Type"] for event in events],
+            ["APPOINT", "CEASE", "CEASE", "CEASE"],
+        )
+        self.assertEqual(extractor.expected_section58_director_events(text), 4)
+        self.assertEqual(
+            extractor.extract_submission_date(text), "30/07/2026"
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory) / "Company"
+            folder.mkdir()
+            annual_return = filing(
+                folder,
+                "S68",
+                datetime(2025, 11, 4),
+                directors=[
+                    director("KHOR PENG CHAI", "531003075415"),
+                    director("LEE MOI TIANG", "580116075412"),
+                    director("KHOR KIAN ZHEN", "031113070753"),
+                ],
+            )
+            section58 = filing(
+                folder,
+                "S58",
+                datetime(2026, 7, 29),
+                events=events,
+                lodgement_date=datetime(2026, 7, 30),
+            )
+            section58.expected_director_events = 4
+            row, _, issues = extractor.resolve_company_event_aware(
+                folder, [annual_return, section58]
+            )
+            self.assertEqual(row["Director1 Name"], "KHOR SU JIN")
+            self.assertEqual(row["Director1 Appointment Date"], "2026-07-28")
+            self.assertFalse(
+                [item for item in issues if item["Severity"] == "CRITICAL"]
+            )
+
+    def test_director_parse_completeness_and_unsupported_field_issues(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory) / "Company"
+            folder.mkdir()
+            annual_return = filing(
+                folder,
+                "S68",
+                datetime(2025, 1, 1),
+                directors=[director("ALICE", "800101010101")],
+            )
+            unparsed = filing(
+                folder,
+                "S58",
+                datetime(2025, 2, 1),
+            )
+            unparsed.expected_director_events = 2
+            unparsed.director_parse_diagnostics = [{
+                "Code": "UNSUPPORTED_DIRECTOR_UPDATE_FIELD",
+                "Date": "01/02/2025",
+                "Raw": "Unknown Label NEW VALUE Date of Change 01/02/2025",
+            }]
+            _, _, issues = extractor.resolve_company_event_aware(
+                folder, [annual_return, unparsed]
+            )
+            codes = {item["Code"] for item in issues}
+            self.assertIn("UNPARSED_DIRECTOR_FILING", codes)
+            self.assertIn("UNSUPPORTED_DIRECTOR_UPDATE_FIELD", codes)
+
+            secretary_only = filing(
+                folder,
+                "S58",
+                datetime(2025, 3, 1),
+                events=[{
+                    "Event Type": "AUDIT_ONLY_OFFICER_FILING",
+                    "Role": "SECRETARY",
+                    "Event Date": "01/03/2025",
+                }],
+            )
+            _, _, secretary_issues = extractor.resolve_company_event_aware(
+                folder, [annual_return, secretary_only]
+            )
+            self.assertNotIn(
+                "UNPARSED_DIRECTOR_FILING",
+                {item["Code"] for item in secretary_issues},
+            )
+
+    def test_confirmed_real_section58_files_parse_when_available(self):
+        paths = {
+            "AGENSI": Path(
+                r"D:\CSAI_CLIENTS\AGENSI SUPREME LOGISTIC SDN. BHD\AR"
+            ) / (
+                "AGENSI SUPREME LOGISTIC Section 58 dated 20260530.pdf"
+            ),
+            "ACTION": Path(
+                r"D:\CSAI_CLIENTS\Action Multiple Sdn Bhd\Forms\Sec 58"
+            ) / (
+                "Action Multiple S58 dated 20260728.pdf"
+            ),
+        }
+        if not all(path.is_file() for path in paths.values()):
+            self.skipTest("Confirmed Section 58 source files are unavailable")
+        agensi = extractor.build_filing_record(
+            paths["AGENSI"], "AGENSI SUPREME LOGISTIC SDN. BHD"
+        )
+        self.assertEqual(agensi.expected_director_events, 1)
+        self.assertEqual(len(agensi.officer_events), 1)
+        self.assertEqual(
+            agensi.officer_events[0]["Residential"],
+            (
+                "21 LORONG PERDA TIMUR 8 BANDAR PERDA 14000 "
+                "BUKIT MERTAJAM PULAU PINANG MALAYSIA"
+            ),
+        )
+        action = extractor.build_filing_record(
+            paths["ACTION"], "Action Multiple Sdn Bhd"
+        )
+        self.assertEqual(action.expected_director_events, 4)
+        self.assertEqual(len(action.officer_events), 4)
+        self.assertEqual(action.lodgement_date, datetime(2026, 7, 30))
+        self.assertEqual(action.effective_date, datetime(2026, 7, 29))
+
     def test_highscore_real_pdf_timeline(self):
         root = Path(
             r"D:\CSAI_CLIENTS\Highscore Trading Sdn Bhd "

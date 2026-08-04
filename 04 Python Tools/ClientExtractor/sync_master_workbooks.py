@@ -12,7 +12,7 @@ import pandas as pd
 DB_DIR = Path(
     os.environ.get(
         "CSAI_DB_DIR",
-        r"C:\CSAI_OS\04 Python Tools\DB",
+        r"C:\CSAI_OS\06 Data\databases",
     )
 )
 

@@ -9,8 +9,26 @@ class BeneficialOwnerTool:
     def execute(self, company_name):
 
         rows = self.repo.get_current_beneficial_owners(
-    company_name
-)
+            company_name
+        )
+
+        return self._with_friendly_fields(
+            rows
+        )
+
+    def get_all_current_beneficial_owners(self):
+
+        rows = (
+            self.repo
+            .get_all_current_beneficial_owners()
+        )
+
+        return self._with_friendly_fields(
+            rows
+        )
+
+    @staticmethod
+    def _with_friendly_fields(rows):
 
         if not rows:
             return []
@@ -19,29 +37,25 @@ class BeneficialOwnerTool:
 
         for row in rows:
 
-            results.append({
+            result = dict(
+                row
+            )
 
-                "Name": row.get("Name"),
+            # Keep the original friendly output keys while
+            # also returning the exact EBOS source fields.
+            result[
+                "Direct Ownership %"
+            ] = row.get(
+                "Criteria A - Direct Ownership %"
+            )
+            result[
+                "Voting Shares %"
+            ] = row.get(
+                "Criteria B - Voting Shares %"
+            )
 
-                "IC": row.get("IC"),
-
-                "Nationality": row.get("Nationality"),
-
-                "Designation": row.get("Designation"),
-
-                "BO Status": row.get("BO Status"),
-
-                "Direct Ownership %":
-                    row.get("Criteria A - Direct Ownership %"),
-
-                "Voting Shares %":
-                    row.get("Criteria B - Voting Shares %"),
-
-                "Date of Becoming BO":
-                    row.get("Date of Becoming BO"),
-
-                "Date of Cessation":
-                    row.get("Date of Cessation")
-            })
+            results.append(
+                result
+            )
 
         return results

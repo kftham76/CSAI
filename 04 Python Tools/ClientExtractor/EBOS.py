@@ -12,11 +12,11 @@ import shutil
 warnings.filterwarnings("ignore", category=UserWarning, module="pypdf")
 
 CLIENT_ROOT = Path(r"D:\CSAI_CLIENTS")
-OUTPUT_FILE = Path(r"C:\CSAI_OS\04 Python Tools\DB\ebos_master.db")
+OUTPUT_FILE = Path(r"D:\CSAI_DATA\Database\Ebos data.xlsx")
 DB_DIR = Path(
     os.environ.get(
         "CSAI_DB_DIR",
-        r"C:\CSAI_OS\04 Python Tools\DB",
+        r"C:\CSAI_OS\06 Data\databases",
     )
 )
 
@@ -874,6 +874,36 @@ def write_excel_atomic(dataframe):
             temp_path.unlink()
 
 
+def validate_output_paths():
+    """Prevent the Excel workbook from overwriting the SQLite database."""
+
+    database_path = DB_DIR / "ebos_master.db"
+
+    if OUTPUT_FILE.suffix.lower() != ".xlsx":
+        raise ValueError(
+            "The EBOS workbook output must use an .xlsx extension: "
+            f"{OUTPUT_FILE}"
+        )
+
+    if database_path.suffix.lower() != ".db":
+        raise ValueError(
+            "The EBOS database output must use a .db extension: "
+            f"{database_path}"
+        )
+
+    workbook_path = os.path.normcase(
+        str(OUTPUT_FILE.resolve(strict=False))
+    )
+    sqlite_path = os.path.normcase(
+        str(database_path.resolve(strict=False))
+    )
+
+    if workbook_path == sqlite_path:
+        raise ValueError(
+            "The EBOS workbook and SQLite database must use separate files."
+        )
+
+
 def replace_sqlite_table_transactional(
     dataframe,
     database_path,
@@ -1044,6 +1074,8 @@ def process_company(folder):
 ####################################################
 
 def main():
+
+    validate_output_paths()
 
     print("EBOS Extractor")
     print("=" * 40)

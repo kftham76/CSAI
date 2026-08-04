@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 DB_FOLDER = (
     ROOT
-    / "04 Python Tools"
-    / "DB"
+    / "06 Data"
+    / "databases"
 )
 
 CLIENT_DB = DB_FOLDER / "csai_master.db"
@@ -21,6 +21,8 @@ CLIENT_DB = DB_FOLDER / "csai_master.db"
 EBOS_DB = DB_FOLDER / "ebos_master.db"
 
 AUDITORS_DB = DB_FOLDER / "auditors.db"
+
+CONSTITUTIONS_DB = DB_FOLDER / "constitutions.db"
 
 ########################################################
 # COMPANY ALIASES

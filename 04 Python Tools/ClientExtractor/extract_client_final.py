@@ -55,7 +55,7 @@ DB_DIR = Path(
     )
 )
 CLIENT_FILTER_PATTERN = os.environ.get("CSAI_CLIENT_FILTER_REGEX", "").strip()
-DOCUMENT_READER_VERSION = "event-ledger-v2"
+DOCUMENT_READER_VERSION = "event-ledger-v3"
 SUPPORTED_SECTIONS = {"S14", "S51", "S58", "S68", "S78", "FORM49"}
 SECTION_PRECEDENCE = {
     "S14": 10,
@@ -73,6 +73,25 @@ EXCLUDED_STATE_SOURCE = re.compile(
 )
 PREFERRED_STATE_SOURCE = re.compile(
     r"(?i)(approved|approval|lodged|registered|certified|ctc)"
+)
+
+DIRECTOR_OUTPUT_FIELDS = (
+    ("Name", "Name"),
+    ("IC", "IC"),
+    ("ID Type", "ID Type"),
+    ("DOB", "DOB"),
+    ("Passport Expiry", "Passport Expiry"),
+    ("Nationality", "Nationality"),
+    ("Citizenship", "Citizenship"),
+    ("Race", "Race"),
+    ("Gender", "Gender"),
+    ("Designation", "Designation"),
+    ("Business Occupation", "Business Occupation"),
+    ("Residential Address", "Residential"),
+    ("Service Address", "Service Address"),
+    ("Email", "Email"),
+    ("Contact No", "Contact No"),
+    ("Appointment Date", "Appointment Date"),
 )
 
 
@@ -423,37 +442,38 @@ def financial_address(text):
 ####################################################
 
 def parse_date(d):
-    """Parse date string (dd/mm/yyyy or yyyy-mm-dd) to datetime."""
-    try:
-        if "-" in d:
-            return datetime.strptime(d, "%Y-%m-%d")
-        return datetime.strptime(d, "%d/%m/%Y")
-    except:
-        return None
+    """Parse supported SSM date formats to a datetime."""
+    if isinstance(d, datetime):
+        return d
+    value = str(d or "").strip()
+    for date_format in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, date_format)
+        except ValueError:
+            continue
+    return None
 
 
 def extract_submission_date(text):
     """Get an explicit submission/lodgement date from an SSM document."""
     patterns = [
-        r'Submission\s+Date\s*:?\s*(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})',
-        r'Date\s+of\s+Lodgement\s*:?\s*(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})',
-        r'Date\s+of\s+Submission\s*:?\s*(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})',
+        r'(?:Submission|Submitted)\s+Date\s*:?\s*(\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})',
+        r'Date\s+of\s+Lodgement\s*:?\s*(\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})',
+        r'Date\s+of\s+Submission\s*:?\s*(\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})',
     ]
     for p in patterns:
         m = re.search(p, text, re.I)
         if m:
             d = m.group(1)
-            if "-" in d:
-                dt = parse_date(d)
-                return dt.strftime("%d/%m/%Y") if dt else d
-            return d
+            dt = parse_date(d)
+            return dt.strftime("%d/%m/%Y") if dt else d
     return ""
 
 
 def extract_ref_date(text):
     """Extract the encoded lodgement date from a known SSM reference."""
     m = re.search(
-        r'(?:ROM|CPO|ROA|XBAR)\s*(\d{2})(\d{2})(\d{4})',
+        r'(?:ROM|CPO|ROA|XBAR|CIU[-\s]*COU)\s*(\d{2})(\d{2})(\d{4})',
         text,
         re.I
     )
@@ -1803,7 +1823,16 @@ def extract_directors_section68_layout(pages):
             values.get("nationality", "")
         )
         residential = _clean_layout_address(active.get("residential", []))
-        service = _clean_layout_address(active.get("service", []))
+        raw_service = _clean_layout_value(active.get("service", []))
+        email_match = re.search(
+            r"[\w.+-]+@[A-Z0-9.-]+\.[A-Z]{2,}",
+            raw_service,
+            re.I,
+        )
+        email = email_match.group(0) if email_match else ""
+        service = _clean_layout_address([
+            raw_service[:email_match.start()] if email_match else raw_service
+        ])
         if (
             name
             and "DIRECTOR" in designation.upper()
@@ -1815,12 +1844,16 @@ def extract_directors_section68_layout(pages):
                 "Name": name,
                 "IC": identifier,
                 "ID Type": id_type,
+                "Passport Expiry": values.get("passport", ""),
                 "Nationality": nationality,
                 "Race": race,
                 "Gender": values.get("gender", ""),
                 "DOB": values.get("dob", ""),
+                "Designation": designation,
+                "Business Occupation": values.get("business", ""),
                 "Residential": residential,
                 "Service Address": service,
+                "Email": email,
             })
         active = None
 
@@ -2751,7 +2784,19 @@ def extract_document_registration_number(text):
         re.I,
     )
     if not match:
-        return ""
+        registration_line = re.search(
+            r"Registration\s*No\.?\s*:?\s*([^\n]+)",
+            text,
+            re.I,
+        )
+        if not registration_line:
+            return ""
+        value = registration_line.group(1)
+        new_number = re.search(r"(?<!\d)(\d{12})(?!\d)", value)
+        old_number = re.search(r"(?<![A-Z0-9])(\d{6,7}-[A-Z])(?![A-Z0-9])", value, re.I)
+        if new_number and old_number:
+            return f"{new_number.group(1)} ({old_number.group(1).upper()})"
+        return new_number.group(1) if new_number else clean(value)
     return (
         f"{match.group(1)} ({match.group(2).strip()})"
         if match.group(2)
@@ -2762,7 +2807,7 @@ def extract_document_registration_number(text):
 def extract_filing_reference(text):
     patterns = (
         r"(?:Lodging|Lodgement)\s+Reference\s+(?:Number|No\.?)\s*:?\s*([A-Z0-9-]+)",
-        r"Reference\s+Number\s*:?\s*([A-Z0-9-]+)",
+        r"Reference\s+(?:Number|No\.?)\s*:?\s*([A-Z0-9-]+)",
     )
     for pattern in patterns:
         match = re.search(pattern, text, re.I)
@@ -2945,50 +2990,295 @@ def extract_all_cessations_section58(text):
     return cessations
 
 
-def extract_director_updates_section58(text):
-    updates = []
+SECTION58_CHANGED_FIELD_PATTERNS = (
+    (r"Passport\s+(?:No\.?\s+)?Expiry\s+Date", "Passport Expiry"),
+    (r"Identification\s+(?:Number|No\.?)", "IC"),
+    (r"Identification\s+Type", "ID Type"),
+    (r"Nationality\s+Country", "Nationality"),
+    (r"Date\s+of\s+Appointment", "Appointment Date"),
+    (r"Date\s+of\s+Birth", "DOB"),
+    (r"Business\s+Occupation", "Business Occupation"),
+    (r"Residential\s+Address", "Residential"),
+    (r"Service\s+Address", "Service Address"),
+    (r"Mobile\s+Phone\s+No\.?,?", "Contact No"),
+    (r"Phone\s+Number", "Contact No"),
+    (r"Contact\s+No\.?,?", "Contact No"),
+    (r"Email\s+Address", "Email"),
+    (r"Email", "Email"),
+    (r"Citizenship", "Citizenship"),
+    (r"Nationality", "Nationality"),
+    (r"Designation", "Designation"),
+    (r"Gender", "Gender"),
+    (r"Race", "Race"),
+    (r"Name", "Name"),
+)
+
+
+def _legacy_director_change_block(text):
     match = re.search(
-        r"(?:CHANGE|UPDATE)\s+(?:IN\s+)?PARTICULARS\s+OF\s+DIRECTOR\s+(.*?)"
-        r"(?:SECTION\s+[A-Z]\s*:|PARTICULARS\s+OF\s+LODGER|$)",
+        r"SECTION\s+[A-Z]\s*:\s*(?:CHANGE|UPDATE)\s+"
+        r"(?:IN\s+)?(?:THE\s+)?PARTICULARS?\s+OF\s+DIRECTOR\b"
+        r"(.*?)(?=SECTION\s+[A-Z]\s*:|PARTICULARS\s+OF\s+LODGER|"
+        r"I\s+declare\s+that|$)",
         text,
         re.I | re.S,
     )
-    if not match:
-        return updates
-    block = match.group(1)
-    name_match = re.search(r"Name\s+(.*?)(?:\n|$)", block, re.I)
-    id_match = re.search(r"Identification\s+Number\s+([\d\s-]{12,20})", block, re.I)
-    date_match = re.search(
-        r"(?:Date\s+of\s+(?:Change|Update)|Effective\s+Date)\s+"
-        r"(\d{2}/\d{2}/\d{4})",
-        block,
+    return match.group(1) if match else ""
+
+
+def _legacy_director_change_people(text):
+    block = _legacy_director_change_block(text)
+    if not block:
+        return []
+    people = [
+        value
+        for value in re.split(
+            r"(?=Identification\s+(?:Number|No\.?)\s+)",
+            block,
+            flags=re.I,
+        )
+        if re.search(r"Identification\s+(?:Number|No\.?)", value, re.I)
+    ]
+    return people or [block]
+
+
+def _changed_field_key(label):
+    for pattern, key in SECTION58_CHANGED_FIELD_PATTERNS:
+        if re.fullmatch(pattern, clean(label), re.I):
+            return key
+    return ""
+
+
+def extract_director_updates_section58(text, diagnostics=None):
+    """Extract dated field-level director changes from legacy Section 58."""
+    updates = []
+    diagnostics = diagnostics if diagnostics is not None else []
+    label_pattern = "|".join(
+        f"(?:{pattern})" for pattern, _ in SECTION58_CHANGED_FIELD_PATTERNS
+    )
+    row_pattern = re.compile(
+        rf"(?P<label>{label_pattern})\s+(?P<value>.*?)\s+"
+        r"Date\s+of\s+Change\s*:?\s*"
+        r"(?P<date>NIL|\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})",
+        re.I | re.S,
+    )
+    date_pattern = re.compile(
+        r"Date\s+of\s+Change\s*:?\s*"
+        r"(?P<date>NIL|\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})",
         re.I,
     )
-    update = {
-        "Event Type": "UPDATE",
-        "Name": clean(name_match.group(1)) if name_match else "",
-        "IC": normalize_identifier(id_match.group(1)) if id_match else "",
-        "Event Date": date_match.group(1) if date_match else "",
-    }
-    for key, pattern in (
-        ("Nationality", r"Nationality\s+([A-Z]+)"),
-        ("Race", r"Race\s+([A-Z]+)"),
-        ("Gender", r"Gender\s+([A-Z]+)"),
-        ("DOB", r"Date\s+of\s+Birth\s+(\d{2}/\d{2}/\d{4})"),
-    ):
-        value_match = re.search(pattern, block, re.I)
-        if value_match:
-            update[key] = clean(value_match.group(1))
-    address_match = re.search(
-        r"Residential\s+Address\s+(.*?)(?:Service\s+Address|Email|$)",
+    for person_block in _legacy_director_change_people(text):
+        rows = list(row_pattern.finditer(person_block))
+        identity = {"Name": "", "IC": ""}
+        covered_dates = []
+        for row in rows:
+            key = _changed_field_key(row.group("label"))
+            value = clean(row.group("value")).strip(" :")
+            if key == "IC":
+                value = normalize_identifier(value)
+            if key in identity and value:
+                identity[key] = value
+        for row in rows:
+            key = _changed_field_key(row.group("label"))
+            value = clean(row.group("value")).strip(" :")
+            if key == "IC":
+                value = normalize_identifier(value)
+            date_value = row.group("date")
+            if date_value.upper() == "NIL":
+                continue
+            event_date = parse_date(date_value)
+            if not event_date:
+                continue
+            covered_dates.append(row.span("date"))
+            normalized_date = event_date.strftime("%d/%m/%Y")
+            update = next(
+                (
+                    item
+                    for item in updates
+                    if item.get("Event Date") == normalized_date
+                    and item.get("Name") == identity.get("Name")
+                    and item.get("IC") == identity.get("IC")
+                ),
+                None,
+            )
+            if update is None:
+                update = {
+                    "Event Type": "UPDATE",
+                    "Name": identity.get("Name", ""),
+                    "IC": identity.get("IC", ""),
+                    "Event Date": normalized_date,
+                    "Changed Fields": [],
+                }
+                updates.append(update)
+            update[key] = value
+            if key not in update["Changed Fields"]:
+                update["Changed Fields"].append(key)
+
+        for date_match in date_pattern.finditer(person_block):
+            if date_match.group("date").upper() == "NIL":
+                continue
+            if any(
+                start <= date_match.start("date") <= end
+                for start, end in covered_dates
+            ):
+                continue
+            diagnostics.append({
+                "Code": "UNSUPPORTED_DIRECTOR_UPDATE_FIELD",
+                "Date": date_match.group("date"),
+                "Raw": clean(
+                    person_block[
+                        max(0, date_match.start() - 240):date_match.end()
+                    ]
+                ),
+            })
+    return updates
+
+
+def _modern_section58_value(block, label, end_labels):
+    end_pattern = "|".join(end_labels)
+    match = re.search(
+        rf"{label}\s+(.*?)(?=\n\s*(?:{end_pattern})\b|$)",
         block,
         re.I | re.S,
     )
-    if address_match:
-        update["Residential"] = clean(address_match.group(1))
-    if update["Name"] or update["IC"]:
-        updates.append(update)
-    return updates
+    return clean(match.group(1)).strip(" ,:") if match else ""
+
+
+def _section58_identifier_value(value):
+    mykad = re.search(r"(?<!\d)(\d{12})(?!\d)", str(value or ""))
+    if mykad:
+        return mykad.group(1)
+    token = re.search(r"\b[A-Z][A-Z0-9-]{4,}\b", str(value or ""), re.I)
+    return normalize_identifier(token.group(0) if token else value)
+
+
+def extract_modern_section58_events(text):
+    """Extract Section 58(1) ADD DIRECTOR and CEASE DIRECTOR blocks."""
+    directors_match = re.search(
+        r"\bDIRECTORS\b(.*?)(?=\bLODGER\s+INFORMATION\b|$)",
+        text,
+        re.I | re.S,
+    )
+    if not directors_match:
+        return []
+    block = directors_match.group(1)
+    markers = list(re.finditer(
+        r"(?:^|\n)\s*(ADD|CEASE)\s+DIRECTOR\s*(?:\n|$)",
+        block,
+        re.I,
+    ))
+    events = []
+    field_endings = (
+        r"Identification\s+Type", r"Identification\s+No\.?",
+        r"Nationality\s+Country", r"Citizenship", r"Date\s+of\s+Birth",
+        r"Race", r"Gender", r"Residential\s+Address", r"Service\s+Address",
+        r"Phone\s+Number", r"Email\s+Address", r"Date\s+of\s+Appointment",
+        r"Type\s+of\s+Cessation", r"Date\s+of\s+Cessation",
+        r"Upload\s+Resolution", r"Other\s+Information", r"Declaration",
+        r"Personal\s+Details", r"Additional\s+Personal\s+Details",
+        r"Contact\s+Information", r"Record\s+Details",
+        r"Cessation\s+of\s+Director", r"Notes",
+    )
+    for index, marker in enumerate(markers):
+        start = marker.end()
+        end = markers[index + 1].start() if index + 1 < len(markers) else len(block)
+        person_block = block[start:end]
+        operation = marker.group(1).upper()
+        name = _modern_section58_value(person_block, r"Name", field_endings)
+        identifier = _modern_section58_value(
+            person_block, r"Identification\s+No\.?", field_endings
+        )
+        id_type = _modern_section58_value(
+            person_block, r"Identification\s+Type", field_endings
+        )
+        if operation == "ADD":
+            appointment = _modern_section58_value(
+                person_block, r"Date\s+of\s+Appointment", field_endings
+            )
+            event = {
+                "Event Type": "APPOINT",
+                "Event Date": appointment,
+                "Appointment Date": appointment,
+                "Name": name,
+                "IC": _section58_identifier_value(identifier),
+                "ID Type": id_type,
+                "Nationality": _modern_section58_value(
+                    person_block, r"Nationality\s+Country", field_endings
+                ),
+                "Citizenship": _modern_section58_value(
+                    person_block, r"Citizenship", field_endings
+                ),
+                "DOB": _modern_section58_value(
+                    person_block, r"Date\s+of\s+Birth", field_endings
+                ),
+                "Race": _modern_section58_value(person_block, r"Race", field_endings),
+                "Gender": _modern_section58_value(person_block, r"Gender", field_endings),
+                "Residential": _modern_section58_value(
+                    person_block, r"Residential\s+Address", field_endings
+                ),
+                "Service Address": _modern_section58_value(
+                    person_block, r"Service\s+Address", field_endings
+                ),
+                "Contact No": _modern_section58_value(
+                    person_block, r"Phone\s+Number", field_endings
+                ),
+                "Email": _modern_section58_value(
+                    person_block, r"Email\s+Address", field_endings
+                ),
+                "Designation": "DIRECTOR",
+            }
+        else:
+            cessation = _modern_section58_value(
+                person_block, r"Date\s+of\s+Cessation", field_endings
+            )
+            event = {
+                "Event Type": "CEASE",
+                "Event Date": cessation,
+                "Date of Cessation": cessation,
+                "Cessation Reason": _modern_section58_value(
+                    person_block, r"Type\s+of\s+Cessation", field_endings
+                ),
+                "Name": name,
+                "IC": _section58_identifier_value(identifier),
+                "ID Type": id_type,
+            }
+        if event.get("Name") or event.get("IC"):
+            events.append(event)
+    return events
+
+
+def expected_section58_director_events(text):
+    """Independently count visible director operations for parse QA."""
+    modern = len(re.findall(
+        r"(?:^|\n)\s*(?:ADD|CEASE)\s+DIRECTOR\s*(?:\n|$)",
+        text,
+        re.I,
+    ))
+    if modern:
+        return modern
+    expected = 0
+    for heading, end_heading in (
+        (r"SECTION\s+[A-Z]\s*:\s*NEW\s+DIRECTOR", r"SECTION\s+[A-Z]\s*:"),
+        (r"SECTION\s+[A-Z]\s*:\s*CESSATION\s+OF\s+DIRECTOR", r"(?:SECTION\s+[A-Z]\s*:|Page\s+\d+\s+of)"),
+    ):
+        blocks = _section58_person_blocks(text, heading, end_heading)
+        if blocks:
+            expected += len(blocks)
+    change_people = _legacy_director_change_people(text)
+    if change_people:
+        for person_block in change_people:
+            dates = {
+                parse_date(value).strftime("%Y-%m-%d")
+                for value in re.findall(
+                    r"Date\s+of\s+Change\s*:?\s*"
+                    r"(\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})",
+                    person_block,
+                    re.I,
+                )
+                if parse_date(value)
+            }
+            expected += len(dates) or 1
+    return expected
 
 
 @dataclass
@@ -3014,6 +3304,8 @@ class FilingRecord:
     members: list = field(default_factory=list)
     directors: list = field(default_factory=list)
     officer_events: list = field(default_factory=list)
+    expected_director_events: int = 0
+    director_parse_diagnostics: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
     duplicate_of: str = ""
 
@@ -3200,7 +3492,14 @@ def build_filing_record(
                 event["Event Date"] = cessation.get("Date of Cessation", "")
                 cessations.append(event)
         record.officer_events.extend(cessations)
-        record.officer_events.extend(extract_director_updates_section58(text))
+        record.officer_events.extend(
+            extract_director_updates_section58(
+                text,
+                record.director_parse_diagnostics,
+            )
+        )
+        record.officer_events.extend(extract_modern_section58_events(text))
+        record.expected_director_events = expected_section58_director_events(text)
         officer_role_match = re.search(
             r"(?:NEW|CESSATION\s+OF|CHANGE\s+IN\s+PARTICULARS\s+OF)\s+"
             r"(SECRETARY|MANAGER)\b",
@@ -3570,6 +3869,11 @@ def normalize_member(raw, section):
     return member
 
 
+def normalize_director_date(value):
+    parsed = parse_date(value)
+    return iso_date(parsed) if parsed else clean(value)
+
+
 def normalize_director(raw):
     return {
         "Name": raw.get("Name", ""),
@@ -3578,15 +3882,33 @@ def normalize_director(raw):
             or raw.get("ID No", "")
             or raw.get("Identification Number", "")
         ),
-        "DOB": raw.get("DOB", ""),
+        "ID Type": raw.get(
+            "ID Type", raw.get("Identification Type", "")
+        ),
+        "DOB": normalize_director_date(
+            raw.get("DOB", raw.get("Date of Birth", ""))
+        ),
+        "Passport Expiry": normalize_director_date(
+            raw.get("Passport Expiry", "")
+        ),
         "Nationality": raw.get("Nationality", ""),
+        "Citizenship": raw.get("Citizenship", ""),
         "Race": raw.get("Race", ""),
         "Gender": raw.get("Gender", ""),
+        "Designation": raw.get("Designation", ""),
+        "Business Occupation": raw.get("Business Occupation", ""),
         "Residential": raw.get(
             "Residential", raw.get("Residential Address", "")
         ),
         "Service Address": raw.get("Service Address", ""),
-        "Appointment Date": raw.get("Appointment Date", ""),
+        "Email": raw.get("Email", raw.get("Email Address", "")),
+        "Contact No": raw.get(
+            "Contact No",
+            raw.get("Phone Number", raw.get("Mobile Phone No", "")),
+        ),
+        "Appointment Date": normalize_director_date(
+            raw.get("Appointment Date", "")
+        ),
     }
 
 
@@ -4042,7 +4364,30 @@ def resolve_directors(folder, records, registry, issues):
         if event_type == "CEASE":
             directors.pop(key, None)
         elif event_type in {"APPOINT", "UPDATE"}:
-            directors[key] = merge_nonempty(directors.get(key, {}), director)
+            merged = merge_nonempty(directors.get(key, {}), director)
+            if event_type == "UPDATE":
+                updated_key = person_key(merged)
+                if updated_key and updated_key != key:
+                    collision = directors.get(updated_key)
+                    if collision and normalize_person_name(
+                        collision.get("Name")
+                    ) != normalize_person_name(merged.get("Name")):
+                        issues.append(issue(
+                            folder,
+                            "CRITICAL",
+                            "DIRECTOR_IDENTITY_REKEY_CONFLICT",
+                            (
+                                "A director identification change conflicts with "
+                                "another current director and was not re-keyed."
+                            ),
+                            record.path,
+                            record.section,
+                            event_date,
+                        ))
+                    else:
+                        directors.pop(key, None)
+                        key = updated_key
+            directors[key] = merged
 
     current = list(directors.values())
     current.sort(
@@ -4230,21 +4575,66 @@ def resolve_company_event_aware(folder, records, canonical_issues=None):
         row["Incorporate Date"] = find_incorporation_date_in_folder(folder)
 
     for index, director in enumerate(directors, start=1):
-        row[f"Director{index} Name"] = director.get("Name", "")
-        row[f"Director{index} IC"] = director.get("IC", "")
-        row[f"Director{index} DOB"] = director.get("DOB", "")
-        row[f"Director{index} Nationality"] = director.get("Nationality", "")
-        row[f"Director{index} Race"] = director.get("Race", "")
-        row[f"Director{index} Gender"] = director.get("Gender", "")
-        row[f"Director{index} Residential Address"] = director.get(
-            "Residential", ""
-        )
-        row[f"Director{index} Service Address"] = director.get(
-            "Service Address", ""
-        )
+        for column_name, field_name in DIRECTOR_OUTPUT_FIELDS:
+            row[f"Director{index} {column_name}"] = director.get(
+                field_name, ""
+            )
     row["_members"] = members
 
     for record in records:
+        if record.status == "VALID" and record.section == "S58":
+            parsed_director_events = sum(
+                event.get("Event Type")
+                in {"APPOINT", "CEASE", "UPDATE"}
+                for event in record.officer_events
+            )
+            if (
+                record.expected_director_events
+                and not parsed_director_events
+            ):
+                issues.append(issue(
+                    folder.name,
+                    "CRITICAL",
+                    "UNPARSED_DIRECTOR_FILING",
+                    (
+                        "A Section 58 director filing contains "
+                        f"{record.expected_director_events} visible operation(s), "
+                        "but none were parsed; the earlier director state was retained."
+                    ),
+                    record.path,
+                    record.section,
+                    record.effective_date,
+                ))
+            elif parsed_director_events < record.expected_director_events:
+                issues.append(issue(
+                    folder.name,
+                    "CRITICAL",
+                    "PARTIAL_DIRECTOR_EVENT_PARSE",
+                    (
+                        "A Section 58 director filing contains "
+                        f"{record.expected_director_events} visible operation(s), but "
+                        f"only {parsed_director_events} were parsed."
+                    ),
+                    record.path,
+                    record.section,
+                    record.effective_date,
+                ))
+            for diagnostic in record.director_parse_diagnostics:
+                issues.append(issue(
+                    folder.name,
+                    "CRITICAL",
+                    diagnostic.get(
+                        "Code", "UNSUPPORTED_DIRECTOR_UPDATE_FIELD"
+                    ),
+                    (
+                        "A dated director field could not be mapped: "
+                        f"{diagnostic.get('Raw', '')}"
+                    ),
+                    record.path,
+                    record.section,
+                    parse_date(diagnostic.get("Date"))
+                    or record.effective_date,
+                ))
         if record.status == "UNREADABLE" and record.section in SUPPORTED_SECTIONS:
             issues.append(issue(
                 folder.name,
@@ -4340,8 +4730,7 @@ def arrange_director_columns(rows):
     a later company would otherwise be appended after the member columns.
     """
     director_fields = [
-        "Name", "IC", "DOB", "Nationality", "Race", "Gender",
-        "Residential Address", "Service Address",
+        column_name for column_name, _ in DIRECTOR_OUTPUT_FIELDS
     ]
     max_directors = max(
         (

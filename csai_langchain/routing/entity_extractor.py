@@ -15,9 +15,82 @@ from csai_langchain.repositories.auditor_repository import (
 from csai_langchain.repositories.ebos_repository import (
     EBOSRepository,
 )
+from csai_langchain.repositories.constitution_repository import (
+    ConstitutionRepository,
+)
 
 
 class EntityExtractor:
+
+    COMPANY_FIELD_ALIASES = {
+        "COMPANY NUMBER": "Reg No",
+        "REGISTRATION NUMBER": "Reg No",
+        "REGISTRATION NO": "Reg No",
+        "REG NO": "Reg No",
+        "ANNUAL RETURN DATE": "Annual Return Date",
+        "ANNUAL RETRUN DATE": "Annual Return Date",
+        "ANUAL RETURN DATE": "Annual Return Date",
+        "ANUAL RETRUN DATE": "Annual Return Date",
+        "ANNUAL RETURN LODGEMENT DATE": (
+            "Date of Lodgement (AR)"
+        ),
+        "AR LODGEMENT DATE": "Date of Lodgement (AR)",
+        "DATE OF LODGEMENT AR": "Date of Lodgement (AR)",
+        "SECTION 51 DATE": "Section 51 Date",
+        "SEC 51 DATE": "Section 51 Date",
+        "S51 DATE": "Section 51 Date",
+        "SECTION 58 DATE": "Section 58 Date",
+        "SEC 58 DATE": "Section 58 Date",
+        "S58 DATE": "Section 58 Date",
+        "SECTION 78 DATE": "Section 78 Date",
+        "SEC 78 DATE": "Section 78 Date",
+        "S78 DATE": "Section 78 Date",
+        "INCORPORATION DATE": "Incorporate Date",
+        "INCORPORATE DATE": "Incorporate Date",
+        "INCORPORATED DATE": "Incorporate Date",
+        "DATE INCORPORATED": "Incorporate Date",
+        "INCOPERATION DATE": "Incorporate Date",
+        "INCOPORATION DATE": "Incorporate Date",
+        "INCORPORATION": "Incorporate Date",
+        "TOTAL ISSUED SHARES": "Total Issued Shares",
+        "ISSUED SHARES": "Total Issued Shares",
+        "BUSINESS ADDRESS": "Business Address",
+        "FINANCIAL RECORD ADDRESS": (
+            "Financial Record Address"
+        ),
+        "ACCOUNTING RECORD ADDRESS": (
+            "Financial Record Address"
+        ),
+        "LAST UPDATED": "UpdatedAt",
+        "UPDATED AT": "UpdatedAt",
+    }
+
+    MONTH_ALIASES = {
+        "JAN": "JANUARY",
+        "JANUARY": "JANUARY",
+        "FEB": "FEBRUARY",
+        "FEBRUARY": "FEBRUARY",
+        "MAR": "MARCH",
+        "MARCH": "MARCH",
+        "APR": "APRIL",
+        "APRIL": "APRIL",
+        "MAY": "MAY",
+        "JUN": "JUNE",
+        "JUNE": "JUNE",
+        "JUL": "JULY",
+        "JULY": "JULY",
+        "AUG": "AUGUST",
+        "AUGUST": "AUGUST",
+        "SEP": "SEPTEMBER",
+        "SEPT": "SEPTEMBER",
+        "SEPTEMBER": "SEPTEMBER",
+        "OCT": "OCTOBER",
+        "OCTOBER": "OCTOBER",
+        "NOV": "NOVEMBER",
+        "NOVEMBER": "NOVEMBER",
+        "DEC": "DECEMBER",
+        "DECEMBER": "DECEMBER",
+    }
 
     GENERIC_COMPANY_WORDS = {
         "SDN",
@@ -37,14 +110,26 @@ class EntityExtractor:
         self.repo = CompanyRepository()
         self.auditor_repo = AuditorRepository()
         self.ebos_repo = EBOSRepository()
+        self.constitution_repo = ConstitutionRepository()
 
         companies = self.repo.get_all_companies()
         auditor_companies = (
             self.auditor_repo.get_all_records()
         )
+        ebos_companies = (
+            self.ebos_repo.get_all_company_names()
+        )
+        constitution_companies = (
+            self.constitution_repo.get_all_company_names()
+        )
 
         company_map = {}
         self.people = set()
+        self.company_columns = tuple(
+            companies[0].keys()
+            if companies
+            else ()
+        )
 
         for row in companies:
 
@@ -146,6 +231,40 @@ class EntityExtractor:
 
                     self.people.add(
                         name
+                    )
+
+        ####################################################
+        # Auxiliary database company lookup
+        ####################################################
+
+        for records in (
+            auditor_companies,
+            ebos_companies,
+            constitution_companies,
+        ):
+
+            for row in records:
+
+                company = row.get(
+                    "Company Name",
+                    ""
+                )
+
+                if (
+                    company is None
+                    or pd.isna(company)
+                ):
+                    continue
+
+                company = str(company).strip()
+                normalized = self.normalize(company)
+
+                if normalized:
+                    # Client_Master was loaded first, so
+                    # preserve its canonical spelling.
+                    company_map.setdefault(
+                        normalized,
+                        company,
                     )
 
         ####################################################
@@ -330,6 +449,175 @@ class EntityExtractor:
         )
 
         return text.strip()
+
+    def extract_company_fields(self, question):
+
+        normalized_question = self.normalize(
+            question
+        )
+
+        if not normalized_question:
+            return ()
+
+        padded_question = (
+            f" {normalized_question} "
+        )
+
+        matches = []
+
+        aliases = sorted(
+            self.COMPANY_FIELD_ALIASES.items(),
+            key=lambda item: len(item[0]),
+            reverse=True
+        )
+
+        for alias, column in aliases:
+
+            if f" {alias} " not in padded_question:
+                continue
+
+            if column not in matches:
+                matches.append(column)
+
+        normalized_columns = sorted(
+            (
+                (
+                    self.normalize(column),
+                    column,
+                )
+                for column in self.company_columns
+            ),
+            key=lambda item: len(item[0]),
+            reverse=True
+        )
+
+        for normalized_column, column in normalized_columns:
+
+            if (
+                not normalized_column
+                or f" {normalized_column} "
+                not in padded_question
+            ):
+                continue
+
+            if column not in matches:
+                matches.append(column)
+
+        return tuple(matches)
+
+    ####################################################
+    # Financial year end extraction
+    ####################################################
+
+    @classmethod
+    def extract_financial_year_end(
+        cls,
+        question
+    ):
+
+        normalized = cls.normalize(
+            question
+        )
+
+        if not normalized:
+            return ""
+
+        month_pattern = "|".join(
+            sorted(
+                cls.MONTH_ALIASES,
+                key=len,
+                reverse=True
+            )
+        )
+
+        day_first = re.search(
+            (
+                r"\b(\d{1,2})"
+                r"(?:ST|ND|RD|TH)?\s+"
+                rf"({month_pattern})\b"
+            ),
+            normalized
+        )
+
+        if day_first:
+
+            day = int(
+                day_first.group(1)
+            )
+
+            if 1 <= day <= 31:
+                return (
+                    f"{day} "
+                    f"{cls.MONTH_ALIASES[day_first.group(2)]}"
+                )
+
+        month_first = re.search(
+            (
+                rf"\b({month_pattern})\s+"
+                r"(\d{1,2})"
+                r"(?:ST|ND|RD|TH)?\b"
+            ),
+            normalized
+        )
+
+        if month_first:
+
+            day = int(
+                month_first.group(2)
+            )
+
+            if 1 <= day <= 31:
+                return (
+                    f"{day} "
+                    f"{cls.MONTH_ALIASES[month_first.group(1)]}"
+                )
+
+        fye_term = (
+            r"(?:FINANCIAL\s+YEAR\s+END|FYE)"
+        )
+
+        after_term = re.search(
+            (
+                fye_term
+                + r"(?:\s+(?:IN|OF|ON|IS|AT))?\s+"
+                + rf"({month_pattern})\b"
+            ),
+            normalized
+        )
+
+        if after_term:
+            return cls.MONTH_ALIASES[
+                after_term.group(1)
+            ]
+
+        before_term = re.search(
+            (
+                rf"\b({month_pattern})"
+                r"(?:\s+(?:A|THE))?\s+"
+                + fye_term
+                + r"\b"
+            ),
+            normalized
+        )
+
+        if before_term:
+            return cls.MONTH_ALIASES[
+                before_term.group(1)
+            ]
+
+        all_companies = re.search(
+            (
+                r"\b(?:ALL|EVERY|EACH)\s+"
+                r"(?:THE\s+)?"
+                r"COMPAN(?:Y|IES)\b"
+            ),
+            normalized
+        )
+
+        if all_companies:
+            return "ALL"
+
+        return ""
 
     ####################################################
     # Significant company tokens

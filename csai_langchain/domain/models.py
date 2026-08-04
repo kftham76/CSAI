@@ -9,6 +9,17 @@ class Director:
     dob: str
     nationality: str
     residential_address: str
+    id_type: str = ""
+    passport_expiry: str = ""
+    citizenship: str = ""
+    race: str = ""
+    gender: str = ""
+    designation: str = ""
+    business_occupation: str = ""
+    service_address: str = ""
+    email: str = ""
+    contact_no: str = ""
+    appointment_date: str = ""
 
 
 @dataclass
