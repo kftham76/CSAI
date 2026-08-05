@@ -18,6 +18,9 @@ from csai_langchain.repositories.ebos_repository import (
 from csai_langchain.repositories.constitution_repository import (
     ConstitutionRepository,
 )
+from csai_langchain.repositories.financial_statement_repository import (
+    FinancialStatementRepository,
+)
 
 
 class EntityExtractor:
@@ -111,6 +114,7 @@ class EntityExtractor:
         self.auditor_repo = AuditorRepository()
         self.ebos_repo = EBOSRepository()
         self.constitution_repo = ConstitutionRepository()
+        self.financial_statement_repo = FinancialStatementRepository()
 
         companies = self.repo.get_all_companies()
         auditor_companies = (
@@ -121,6 +125,9 @@ class EntityExtractor:
         )
         constitution_companies = (
             self.constitution_repo.get_all_company_names()
+        )
+        financial_statement_companies = (
+            self.financial_statement_repo.get_all_company_names()
         )
 
         company_map = {}
@@ -241,6 +248,7 @@ class EntityExtractor:
             auditor_companies,
             ebos_companies,
             constitution_companies,
+            financial_statement_companies,
         ):
 
             for row in records:

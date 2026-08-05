@@ -26,6 +26,9 @@ from csai_langchain.tools.person_status_tool import (
 from csai_langchain.tools.constitution_tool import (
     ConstitutionTool,
 )
+from csai_langchain.tools.financial_statement_tool import (
+    FinancialStatementTool,
+)
 
 
 class CSAIService:
@@ -40,6 +43,7 @@ class CSAIService:
         self.company_list_tool = CompanyListTool()
         self.person_status_tool = PersonStatusTool()
         self.constitution_tool = ConstitutionTool()
+        self.financial_statement_tool = FinancialStatementTool()
 
         self._closed = False
 
@@ -600,6 +604,77 @@ class CSAIService:
                 results=results,
                 sources=(
                     ["constitutions.db:Sheet1"]
+                    if results
+                    else []
+                ),
+            )
+
+        ################################################
+        # Requested financial-statements database fields
+        ################################################
+
+        if intent_name == "financial_statement_information":
+
+            requested_fields = tuple(
+                getattr(
+                    intent,
+                    "requested_fields",
+                    (),
+                )
+                or ()
+            )
+
+            if not requested_fields:
+                return SearchResult(
+                    status="not_found",
+                    intent="financial_statement_information",
+                    answer=(
+                        "No supported financial statement field "
+                        "was identified."
+                    ),
+                    company=company,
+                    count=0,
+                    results=[],
+                    sources=[],
+                )
+
+            if not company and not all_records:
+                return self.missing_company_result(
+                    "financial_statement_information",
+                    "financial statements database",
+                )
+
+            results = (
+                self.financial_statement_tool
+                .get_all_company_information(
+                    requested_fields
+                )
+                if all_records
+                else self.financial_statement_tool
+                .get_company_information(
+                    company,
+                    requested_fields,
+                )
+            )
+
+            return SearchResult(
+                status=(
+                    "success" if results else "not_found"
+                ),
+                intent="financial_statement_information",
+                answer=(
+                    ""
+                    if results
+                    else (
+                        "No financial statement information "
+                        "was found."
+                    )
+                ),
+                company=company,
+                count=len(results),
+                results=results,
+                sources=(
+                    ["FS.db:FS"]
                     if results
                     else []
                 ),

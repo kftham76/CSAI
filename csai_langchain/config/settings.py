@@ -24,6 +24,8 @@ AUDITORS_DB = DB_FOLDER / "auditors.db"
 
 CONSTITUTIONS_DB = DB_FOLDER / "constitutions.db"
 
+FS_DB = DB_FOLDER / "FS.db"
+
 ########################################################
 # COMPANY ALIASES
 ########################################################

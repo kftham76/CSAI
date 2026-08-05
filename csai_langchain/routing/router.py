@@ -2,7 +2,18 @@ import re
 
 from .patterns import *
 from .entity_extractor import EntityExtractor
-from .capabilities import CAPABILITIES
+from .capabilities import (
+    CAPABILITIES,
+    FS_AUDIT_FIRM_FIELD,
+    FS_BOARD_APPROVAL_FIELD,
+    FS_CIRCULATION_FIELD,
+    FS_CURRENT_END_FIELD,
+    FS_DECLARANT_FIELD,
+    FS_DIRECTOR_FEE_FIELD,
+    FS_FIRST_SIGNER_FIELD,
+    FS_SECOND_SIGNER_FIELD,
+    FS_SIGNER_COUNT_FIELD,
+)
 from csai_langchain.domain.intent import Intent, MultiIntent
 
 
@@ -134,8 +145,51 @@ class Router:
                 ),
             })
 
+        fs_fields = {
+            request["field"]
+            for request in requests
+            if request["group"]
+            == "financial_statement_information"
+        }
+
+        # Exact FS fields take precedence over the older broad
+        # auditor/director keywords.
+        filtered = []
+        fs_director_fields = {
+            FS_BOARD_APPROVAL_FIELD,
+            FS_DECLARANT_FIELD,
+            FS_SIGNER_COUNT_FIELD,
+            FS_FIRST_SIGNER_FIELD,
+            FS_SECOND_SIGNER_FIELD,
+            FS_DIRECTOR_FEE_FIELD,
+        }
+        for request in requests:
+            if (
+                request["group"] == "auditor_information"
+                and request["field"] == "Financial Year End"
+                and FS_CURRENT_END_FIELD in fs_fields
+            ):
+                continue
+            if (
+                request["group"] == "auditor_information"
+                and request["field"] == "Auditor Name"
+                and FS_AUDIT_FIRM_FIELD in fs_fields
+            ):
+                continue
+            if (
+                request["group"] == "director"
+                and fs_fields.intersection(fs_director_fields)
+            ):
+                continue
+            if (
+                request["group"] == "shareholder"
+                and FS_CIRCULATION_FIELD in fs_fields
+            ):
+                continue
+            filtered.append(request)
+
         return sorted(
-            requests,
+            filtered,
             key=lambda request: request["position"],
         )
 
@@ -516,6 +570,31 @@ class Router:
                     requests_all and not company
                 ),
                 requested_fields=constitution_fields,
+                question=question,
+            )
+
+        financial_statement_fields = tuple(
+            request["field"]
+            for request in self._capability_requests(
+                question
+            )
+            if request["group"]
+            == "financial_statement_information"
+        )
+
+        if financial_statement_fields:
+
+            company = self.extractor.extract_company(
+                question
+            )
+
+            return Intent(
+                intent="financial_statement_information",
+                company=company,
+                all_records=(
+                    requests_all and not company
+                ),
+                requested_fields=financial_statement_fields,
                 question=question,
             )
 
