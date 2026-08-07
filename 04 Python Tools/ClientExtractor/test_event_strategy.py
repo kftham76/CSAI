@@ -113,6 +113,66 @@ class EventStrategyTests(unittest.TestCase):
         self.assertEqual(extractor.extract_submission_date(text), "")
         self.assertEqual(extractor.extract_lodgement_date(text), (None, ""))
 
+    def test_section68_member_row_recalibrates_name_column(self):
+        page = "\n".join([
+            (
+                " SECTION E: PARTICULARS OF MEMBERS, COMPANY WITH EQUAL TO "
+                "OR LESS THAN FIVE HUNDRED MEMBERS"
+            ),
+            "",
+            (
+                "                                  Type of                  "
+                "                                            Nationality/  "
+                "                                                       "
+                "Number of"
+            ),
+            (
+                "Particulars of   Reference        member/ Type             "
+                "          Type/            Passport         Place of        "
+                "                                                     shares "
+                "held by   Analysis of"
+            ),
+            (
+                "members          number           of trustee (if    "
+                "Title/Name       Identification   expiry date      "
+                "incorporation    Gender            Date of birth    Address "
+                "         members          shareholdings"
+            ),
+            (
+                "                                  applicable)              "
+                "          number                            or origin/      "
+                "                                                     /Types "
+                "of"
+            ),
+            (
+                "                                                       "
+                "                                                Race       "
+                "                                                          "
+                "shares"
+            ),
+            "",
+            (
+                "   0001          0001             INDIVIDUAL       LEE     "
+                "   BEE    MYKAD                             MALAYSIA        "
+                " FEMALE            31/03/1985       PT 245 & 246,    1 0 0 "
+                "           CITIZENS"
+            ),
+            (
+                "                                                   HWA     "
+                "          850331035736                      CHINESE         "
+                "                                    PERUMAHAN        "
+                "ORDINARY         WHO      ARE"
+            ),
+            "   TOTAL NUMBER OF SHARES                                  100",
+        ])
+
+        members = extractor.extract_members_section68_layout([page])
+
+        self.assertEqual(len(members), 1)
+        self.assertEqual(members[0]["Type"], "INDIVIDUAL")
+        self.assertEqual(members[0]["Name"], "LEE BEE HWA")
+        self.assertEqual(members[0]["ID No"], "850331035736")
+
     def test_master_date_columns_are_adjacent_and_use_latest_valid_filings(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory) / "Company"

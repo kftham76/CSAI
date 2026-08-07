@@ -125,35 +125,48 @@ def extract_financial_year_end(text: str) -> tuple[date | None, bool]:
 
 
 def _ocr_engine():
-    """Return optional OCR dependencies without making OCR mandatory."""
+    """Create the explicitly requested OCR engine."""
     try:
         import numpy as np  # type: ignore
         import pypdfium2  # type: ignore
         from rapidocr_onnxruntime import RapidOCR  # type: ignore
 
         return pypdfium2, np, RapidOCR()
-    except ImportError:
-        return None
+    except ImportError as error:
+        raise RuntimeError(
+            "OCR was requested but its optional dependencies are unavailable. "
+            "Install numpy, pypdfium2, rapidocr-onnxruntime and onnxruntime, "
+            "or rerun without --ocr."
+        ) from error
 
 
 _OCR = None
 _OCR_CHECKED = False
 
 
-def ocr_pages(pdf_path: Path, page_numbers: Iterable[int]) -> dict[int, str]:
+def get_ocr_engine():
     global _OCR, _OCR_CHECKED
     if not _OCR_CHECKED:
         _OCR = _ocr_engine()
         _OCR_CHECKED = True
-    if _OCR is None:
+    return _OCR
+
+
+def ocr_pages(pdf_path: Path, page_numbers: Iterable[int]) -> dict[int, str]:
+    page_numbers = list(page_numbers)
+    if not page_numbers:
         return {}
 
-    pypdfium2, np, engine = _OCR
+    pypdfium2, np, engine = get_ocr_engine()
     output: dict[int, str] = {}
     document = pypdfium2.PdfDocument(str(pdf_path))
-    for page_number in page_numbers:
+    for position, page_number in enumerate(page_numbers, start=1):
         if page_number < 0 or page_number >= len(document):
             continue
+        print(
+            f"    OCR: {pdf_path.name} page {page_number + 1}/{len(document)} "
+            f"({position}/{len(page_numbers)} sparse page(s))"
+        )
         try:
             image = document[page_number].render(scale=2.0).to_pil()
             result, _ = engine(np.asarray(image))
@@ -164,7 +177,7 @@ def ocr_pages(pdf_path: Path, page_numbers: Iterable[int]) -> dict[int, str]:
     return output
 
 
-def read_head(pdf_path: Path, allow_ocr: bool = True) -> tuple[str, int]:
+def read_head(pdf_path: Path, allow_ocr: bool = False) -> tuple[str, int]:
     reader = PdfReader(str(pdf_path))
     pages = [normalize_text(page.extract_text() or "") for page in reader.pages[:3]]
     combined = "\n".join(pages)
@@ -208,9 +221,9 @@ def candidate_stage(candidate: Candidate) -> tuple:
     )
 
 
-def make_candidate(pdf_path: Path) -> Candidate | None:
+def make_candidate(pdf_path: Path, allow_ocr: bool = False) -> Candidate | None:
     try:
-        head, page_count = read_head(pdf_path)
+        head, page_count = read_head(pdf_path, allow_ocr=allow_ocr)
     except Exception as error:
         print(f"  WARNING: cannot read {pdf_path.name}: {error}")
         return None
@@ -247,16 +260,36 @@ def find_fs_folder(company_folder: Path) -> Path | None:
         return None
 
 
-def select_latest_pdf(fs_folder: Path) -> Candidate | None:
+def is_receipt_pdf(pdf_path: Path) -> bool:
+    name = pdf_path.name.casefold()
+    return "receipt" in name or bool(
+        re.search(r"(?:^|[^a-z0-9])or[_ -]?xb", name)
+    )
+
+
+def select_latest_pdf(
+    fs_folder: Path,
+    allow_ocr: bool = False,
+) -> Candidate | None:
     pdfs = sorted(
         (
             path
             for path in fs_folder.rglob("*")
             if path.is_file() and path.suffix.casefold() == ".pdf"
+            and not is_receipt_pdf(path)
         ),
         key=lambda path: str(path).casefold(),
     )
-    candidates = [candidate for pdf in pdfs if (candidate := make_candidate(pdf))]
+    candidates = []
+    for position, pdf in enumerate(pdfs, start=1):
+        try:
+            display_path = pdf.relative_to(fs_folder)
+        except ValueError:
+            display_path = pdf.name
+        print(f"  Inspecting: {position}/{len(pdfs)} {display_path}")
+        candidate = make_candidate(pdf, allow_ocr=allow_ocr)
+        if candidate is not None:
+            candidates.append(candidate)
     if not candidates:
         return None
 
@@ -269,11 +302,14 @@ def select_latest_pdf(fs_folder: Path) -> Candidate | None:
     return min(latest, key=candidate_stage)
 
 
-def read_selected_pdf(pdf_path: Path) -> tuple[PdfReader, list[str]]:
+def read_selected_pdf(
+    pdf_path: Path,
+    allow_ocr: bool = False,
+) -> tuple[PdfReader, list[str]]:
     reader = PdfReader(str(pdf_path))
     pages = [normalize_text(page.extract_text() or "") for page in reader.pages]
     weak_pages = [index for index, text in enumerate(pages) if len(flat_text(text)) < 20]
-    if weak_pages:
+    if allow_ocr and weak_pages:
         recovered = ocr_pages(pdf_path, weak_pages)
         for index, text in recovered.items():
             if len(flat_text(text)) > len(flat_text(pages[index])):
@@ -557,8 +593,12 @@ def extract_current_director_fee(reader: PdfReader, pages: list[str]) -> float |
     return None
 
 
-def extract_selected(candidate: Candidate, company: str) -> dict:
-    reader, pages = read_selected_pdf(candidate.path)
+def extract_selected(
+    candidate: Candidate,
+    company: str,
+    allow_ocr: bool = False,
+) -> dict:
+    reader, pages = read_selected_pdf(candidate.path, allow_ocr=allow_ocr)
     whole = "\n".join(pages)
     row = {column: None for column in COLUMNS}
     row["Company"] = company
@@ -663,7 +703,10 @@ def write_workbook(rows: list[dict], output_file: Path) -> None:
             temp_file.unlink()
 
 
-def process_clients(client_root: Path) -> tuple[list[dict], list[str]]:
+def process_clients(
+    client_root: Path,
+    allow_ocr: bool = False,
+) -> tuple[list[dict], list[str]]:
     rows: list[dict] = []
     warnings_list: list[str] = []
     if not client_root.is_dir():
@@ -678,14 +721,22 @@ def process_clients(client_root: Path) -> tuple[list[dict], list[str]]:
         if fs_folder is None:
             continue
         print(f"Processing: {company.name}")
-        candidate = select_latest_pdf(fs_folder)
+        candidate = select_latest_pdf(fs_folder, allow_ocr=allow_ocr)
         if candidate is None:
             warning = f"{company.name}: no financial-statement PDF with a usable year end"
             warnings_list.append(warning)
             print(f"  WARNING: {warning}")
             continue
         try:
-            row = extract_selected(candidate, company.name)
+            print(
+                f"  Extracting: {candidate.path.name} "
+                f"({candidate.page_count} pages)"
+            )
+            row = extract_selected(
+                candidate,
+                company.name,
+                allow_ocr=allow_ocr,
+            )
         except Exception as error:
             warning = f"{company.name}: selected PDF failed ({candidate.path.name}): {error}"
             warnings_list.append(warning)
@@ -708,6 +759,11 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--client-root", type=Path, default=CLIENT_ROOT)
     parser.add_argument("--output", type=Path, default=OUTPUT_FILE)
+    parser.add_argument(
+        "--ocr",
+        action="store_true",
+        help="OCR sparse pages in scanned PDFs (disabled by default)",
+    )
     return parser.parse_args()
 
 
@@ -716,7 +772,15 @@ def main() -> None:
     print("Financial Statements Extractor")
     print(f"Input : {arguments.client_root}")
     print(f"Output: {arguments.output}")
-    rows, warnings_list = process_clients(arguments.client_root)
+    print(f"OCR   : {'enabled' if arguments.ocr else 'disabled'}")
+    if arguments.ocr:
+        print("OCR   : initializing opt-in engine...")
+        get_ocr_engine()
+        print("OCR   : engine ready")
+    rows, warnings_list = process_clients(
+        arguments.client_root,
+        allow_ocr=arguments.ocr,
+    )
     if not rows:
         raise RuntimeError("No financial-statement rows were produced")
     write_workbook(rows, arguments.output)

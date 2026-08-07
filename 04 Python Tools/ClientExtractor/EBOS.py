@@ -5,20 +5,12 @@ from collections import Counter
 import re
 import warnings
 from datetime import datetime
-import sqlite3
 import os
-import shutil
 
 warnings.filterwarnings("ignore", category=UserWarning, module="pypdf")
 
 CLIENT_ROOT = Path(r"D:\CSAI_CLIENTS")
 OUTPUT_FILE = Path(r"D:\CSAI_DATA\Database\Ebos data.xlsx")
-DB_DIR = Path(
-    os.environ.get(
-        "CSAI_DB_DIR",
-        r"C:\CSAI_OS\06 Data\databases",
-    )
-)
 
 # All columns in output order
 COLUMNS = [
@@ -874,177 +866,13 @@ def write_excel_atomic(dataframe):
             temp_path.unlink()
 
 
-def validate_output_paths():
-    """Prevent the Excel workbook from overwriting the SQLite database."""
-
-    database_path = DB_DIR / "ebos_master.db"
-
+def validate_output_path():
+    """Require the extractor output to remain an Excel workbook."""
     if OUTPUT_FILE.suffix.lower() != ".xlsx":
         raise ValueError(
             "The EBOS workbook output must use an .xlsx extension: "
             f"{OUTPUT_FILE}"
         )
-
-    if database_path.suffix.lower() != ".db":
-        raise ValueError(
-            "The EBOS database output must use a .db extension: "
-            f"{database_path}"
-        )
-
-    workbook_path = os.path.normcase(
-        str(OUTPUT_FILE.resolve(strict=False))
-    )
-    sqlite_path = os.path.normcase(
-        str(database_path.resolve(strict=False))
-    )
-
-    if workbook_path == sqlite_path:
-        raise ValueError(
-            "The EBOS workbook and SQLite database must use separate files."
-        )
-
-
-def replace_sqlite_table_transactional(
-    dataframe,
-    database_path,
-    table_name,
-):
-    """Swap a validated staging table when Windows locks the database file."""
-
-    staging_table = (
-        f"__sync_{table_name}"
-    )
-    connection = sqlite3.connect(
-        str(database_path),
-        timeout=30,
-    )
-
-    try:
-        connection.execute(
-            f"DROP TABLE IF EXISTS [{staging_table}]"
-        )
-        connection.commit()
-
-        dataframe.to_sql(
-            staging_table,
-            connection,
-            if_exists="replace",
-            index=False,
-        )
-
-        staging_columns = [
-            row[1]
-            for row in connection.execute(
-                f"PRAGMA table_info([{staging_table}])"
-            )
-        ]
-        staging_rows = connection.execute(
-            f"SELECT COUNT(*) FROM [{staging_table}]"
-        ).fetchone()[0]
-
-        if staging_columns != list(dataframe.columns):
-            raise RuntimeError(
-                f"Column validation failed for {table_name}."
-            )
-
-        if staging_rows != len(dataframe):
-            raise RuntimeError(
-                f"Row-count validation failed for {table_name}: "
-                f"expected {len(dataframe)}, imported "
-                f"{staging_rows}."
-            )
-
-        try:
-            connection.execute(
-                "BEGIN IMMEDIATE"
-            )
-            connection.execute(
-                f"DROP TABLE IF EXISTS [{table_name}]"
-            )
-            connection.execute(
-                f"ALTER TABLE [{staging_table}] "
-                f"RENAME TO [{table_name}]"
-            )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-
-    finally:
-        try:
-            connection.execute(
-                f"DROP TABLE IF EXISTS [{staging_table}]"
-            )
-            connection.commit()
-        finally:
-            connection.close()
-
-
-def save_to_sqlite_atomic(
-    dataframe,
-    table_name,
-):
-    """Atomically replace one SQLite table while preserving other tables."""
-
-    DB_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    database_path = (
-        DB_DIR
-        / "ebos_master.db"
-    )
-    temp_path = (
-        DB_DIR
-        / ".ebos_master.tmp.db"
-    )
-
-    if temp_path.exists():
-        temp_path.unlink()
-
-    if database_path.exists():
-        shutil.copy2(
-            database_path,
-            temp_path,
-        )
-
-    try:
-        connection = sqlite3.connect(
-            str(temp_path)
-        )
-
-        try:
-            with connection:
-                dataframe.to_sql(
-                    table_name,
-                    connection,
-                    if_exists="replace",
-                    index=False,
-                )
-        finally:
-            connection.close()
-
-        try:
-            os.replace(
-                temp_path,
-                database_path,
-            )
-        except PermissionError:
-            replace_sqlite_table_transactional(
-                dataframe,
-                database_path,
-                table_name,
-            )
-
-    finally:
-        if temp_path.exists():
-            temp_path.unlink()
-
-    print(
-        "SQLite updated : "
-        f"{database_path} ({table_name})"
-    )
 
 
 ####################################################
@@ -1075,7 +903,7 @@ def process_company(folder):
 
 def main():
 
-    validate_output_paths()
+    validate_output_path()
 
     print("EBOS Extractor")
     print("=" * 40)
@@ -1147,11 +975,6 @@ def main():
 
     write_excel_atomic(
         dataframe
-    )
-
-    save_to_sqlite_atomic(
-        dataframe,
-        "EBOS_Master",
     )
 
     print("Done.")

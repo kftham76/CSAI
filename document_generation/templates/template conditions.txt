@@ -1,0 +1,57 @@
+
+python -m document_generation --company "VL Realty Management Services Sdn. Bhd" --overwrite
+python -m document_generation --company "CS SURIA Sdn Bhd" --overwrite
+python -m document_generation --company "Advance Worldtech Sdn. Bhd" --overwrite
+python -m document_generation --company "CTW Global Sdn Bhd" --overwrite
+python -m document_generation --company "HIGHSCORE TRADING SDN. BHD." --overwrite
+python -m document_genenation --company "Century Integrated Sdn. Bhd" --overwrite 
+python -m document_generation --company "CY GLOBAL INDUSTRIES SDN. BHD" --overwrite 
+python -m document_generation --company "Foremost Avenue Sdn. Bhd" --overwrite 
+python -m document_generation --company "EngageMYND SDN BHD" --overwrite 
+python -m document_generation --company "ATLAS AVENUE GOLD & JEWELLERY SDN. BHD." --overwrite 
+python -m document_generation --company "ATLAS AVENUE SDN. BHD." --overwrite 
+
+
+DIRECTORS’ WRITTEN RESOLUTION PASSED PURSUANT TO PARAGRAPH 15 OF THE THIRD SCHEDULE OF THE COMPANIES ACT, 2016
+DIRECTORS’ WRITTEN RESOLUTION PASSED PURSUANT TO ARTICLE 23(b) OF THE COMPANY’S CONSTITUTION
+DIRECTORS’ WRITTEN RESOLUTION PASSED PURSUANT TO ARTICLE 34 OF THE COMPANY’S CONSTITUTION
+DIRECTORS’ WRITTEN RESOLUTION PASSED PURSUANT TO ARTICLE 36 OF THE COMPANY’S CONSTITUTION
+DIRECTORS’ WRITTEN RESOLUTION PASSED PURSUANT TO ARTICLE 37 OF THE COMPANY’S CONSTITUTION
+DIRECTORS’ WRITTEN RESOLUTION PASSED PURSUANT TO CLAUSE 53 OF THE COMPANY’S CONSTITUTION
+
+
+Template 1 "C:\CSAI_OS\document_generation\templates\agm_approve_accounts_template.docx" & template 2 "C:\CSAI_OS\document_generation\templates\first_agm_approve_accounts_template .docx" which i think we did already 
+
+
+DIRECTORS’ WRITTEN RESOLUTION PASSED PURSUANT TO REGULATION 90 (TABLE A) OF THE COMPANY’S ARTICLES OF ASSOCIATION (COMPANIES CONSTITUTION)
+
+Template 3 which will be edited "C:\CSAI_OS\document_generation\templates\agm_approce_accounts_template_section 90.doc"
+
+HOAY AUTOMATION SDN. BHD. & JJTECH same constitution but diff format.
+QSD Compyer & CG GOLD same constitution but diff format.
+
+
+read through this document we're moving to our next step of automated generating template.
+1) check on the bracket description on which database should the information being retrived using our existing csai_langchain program for information retrieval which we had done before.
+2) editing the template by changing information sections into {{ }} format for python program rendering use "C:\CSAI_OS\document_generation\templates\agm_approve_accounts_template.docx" and "C:\CSAI_OS\document_generation\templates\first_agm_approve_accounts_template .docx" for example because is related to agm.
+3) this program will located at C:\CSAI_OS\document_generation only write and test program at this location.
+4) make sure this new template can preserve the behaviour that previous template and generation i told you to do
+5) guidance on the uploaded image handle. This is a special case where amount will be get from the FS database on the Director's remuneration - Fees (Current Financial Year) column and amount for each director would be the percentage which get from clients_master database Member1/2/3...etc Shares column which we also done before can use it back .
+6) for the bracket description in the word file check the database and our csai_langchain program on how can the information being retrieved without affecting our original csai_langhcain program or a newly created program link to csai_langchain for information retrieval.
+7) format of the file for the members signature part program would able to handle multiple member cases by row maximum is 2 as the picture i uploaded more than 4 will be placed below with the same padding. for the address the output format must just as the word file i uploaded only for the bracketed part like the shareholders of Company with their residential address. Program should able handle multiple member across the file which you need to inspect where numbers of member would affect the layout of the file.
+8) section 4 to 7 is the same thing we did before so as reference only can use back the behavior i think from the C:\CSAI_OS\document_generation\generator.py
+9) NEW template selection case need to get which DWR statutory this company use before choosing the template here is the logic 
+
+if dwr is: DIRECTORS’ WRITTEN RESOLUTION PASSED PURSUANT TO PARAGRAPH 15 OF THE THIRD SCHEDULE OF THE COMPANIES ACT, 2016
+Template 1 "C:\CSAI_OS\document_generation\templates\agm_approve_accounts_template.docx" & template 2 "C:\CSAI_OS\document_generation\templates\first_agm_approve_accounts_template .docx" which i think we did already 
+
+
+if dwr is: DIRECTORS’ WRITTEN RESOLUTION PASSED PURSUANT TO REGULATION 90 (TABLE A) OF THE COMPANY’S ARTICLES OF ASSOCIATION (COMPANIES CONSTITUTION)
+Template 3 which will be edited "C:\CSAI_OS\document_generation\templates\agm_approce_accounts_template_section 90.doc"
+
+other than these two use template 1 for generation first
+
+10) ask me any question if needed, especially on the information that need to be interchange from the doc file.
+11) program should able handle many cases as information varies across companies with the information getting from database or csai_langchain program or wmethod being chosen for information retrieval
+12) uploaded document is for your reference for the output of cases while testing. template_test is the template file that is going to be used in production.
+13) output format of the file is docx and located at "D:\CSAI_DATA\AGM Output"

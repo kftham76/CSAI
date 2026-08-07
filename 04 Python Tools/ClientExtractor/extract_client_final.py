@@ -8,12 +8,10 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sys
 import time
 import warnings
 from datetime import datetime
-import sqlite3
 
 # Optional OCR support for scanned PDFs. RapidOCR is the preferred backend
 # because it does not require a separately installed Tesseract executable.
@@ -46,12 +44,6 @@ OUTPUT_FILE = Path(
     os.environ.get(
         "CSAI_OUTPUT_FILE",
         r"D:\CSAI_DATA\Database\clients_master.xlsx",
-    )
-)
-DB_DIR = Path(
-    os.environ.get(
-        "CSAI_DB_DIR",
-        r"C:\CSAI_OS\04 Python Tools\DB",
     )
 )
 CLIENT_FILTER_PATTERN = os.environ.get("CSAI_CLIENT_FILTER_REGEX", "").strip()
@@ -2110,8 +2102,7 @@ def extract_members_section68_layout(pages):
                     for key in starts
                     if key not in {"number", "reference"}
                 }
-                if page_width != base_width:
-                    page_starts = _member_page_starts(scaled_starts, [line])
+                page_starts = _member_page_starts(scaled_starts, [line])
             if not active:
                 continue
             sliced = _slice_layout_line(line, page_starts)
@@ -3557,32 +3548,6 @@ def build_filing_record(
     return record
 
 
-def load_document_cache(db_path):
-    db_path = Path(db_path)
-    if not db_path.exists():
-        return {}
-    connection = sqlite3.connect(db_path)
-    connection.row_factory = sqlite3.Row
-    try:
-        table = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name='Statutory_Documents'"
-        ).fetchone()
-        if not table:
-            return {}
-        cache = {}
-        for row in connection.execute(
-            """
-            SELECT SourcePath,Size,MTimeNs,ReaderVersion,ParsedJSON
-            FROM Statutory_Documents
-            """
-        ):
-            cache[row["SourcePath"]] = dict(row)
-        return cache
-    finally:
-        connection.close()
-
-
 def _section14_ocr_candidate_key(record):
     path = Path(record.path)
     name = path.stem.lower()
@@ -4666,60 +4631,19 @@ def resolve_company_event_aware(folder, records, canonical_issues=None):
     return row, events, issues
 
 
-def save_to_sqlite(df, table_name, db_dir=DB_DIR, audit_tables=None):
-    """Atomically replace the master and statutory audit tables."""
-    db_dir.mkdir(parents=True, exist_ok=True)
-    db_path = db_dir / "csai_master.db"
-    temp_path = db_dir / ".csai_master.tmp.db"
-
-    if temp_path.exists():
-        temp_path.unlink()
-    if db_path.exists():
-        shutil.copy2(db_path, temp_path)
-
-    connection = sqlite3.connect(temp_path)
-    try:
-        with connection:
-            df.to_sql(table_name, connection, if_exists="replace", index=False)
-            for audit_name, audit_df in (audit_tables or {}).items():
-                audit_df.to_sql(
-                    audit_name,
-                    connection,
-                    if_exists="replace",
-                    index=False,
-                )
-            if audit_tables and "Statutory_Documents" in audit_tables:
-                connection.execute(
-                    "CREATE INDEX IF NOT EXISTS "
-                    "idx_statutory_documents_folder_section "
-                    "ON Statutory_Documents(Folder, Section)"
-                )
-            if audit_tables and "Statutory_Events" in audit_tables:
-                connection.execute(
-                    "CREATE INDEX IF NOT EXISTS "
-                    "idx_statutory_events_folder_date "
-                    "ON Statutory_Events(Folder, EffectiveDate)"
-                )
-    finally:
-        connection.close()
-    os.replace(temp_path, db_path)
-    return db_path
-
-
-def save_outputs(df, audit_tables=None):
-    """Write Excel and SQLite outputs after extraction has completed."""
+def save_outputs(df):
+    """Atomically replace the master Excel workbook."""
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     temp_excel = OUTPUT_FILE.with_name(f".{OUTPUT_FILE.stem}.tmp.xlsx")
     if temp_excel.exists():
         temp_excel.unlink()
-    df.to_excel(temp_excel, index=False)
-    db_path = save_to_sqlite(
-        df,
-        "Client_Master",
-        audit_tables=audit_tables,
-    )
-    os.replace(temp_excel, OUTPUT_FILE)
-    return OUTPUT_FILE, db_path
+    try:
+        df.to_excel(temp_excel, index=False)
+        os.replace(temp_excel, OUTPUT_FILE)
+    finally:
+        if temp_excel.exists():
+            temp_excel.unlink()
+    return OUTPUT_FILE
 
 
 def arrange_director_columns(rows):
@@ -4998,15 +4922,15 @@ def run_event_aware_extraction(
     if comparison_mode:
         print("COMPARISON :", json.dumps(comparison, sort_keys=True))
     if persist and not comparison_mode:
-        excel_path, db_path = save_outputs(df, audit_tables)
+        excel_path = save_outputs(df)
     else:
-        excel_path, db_path = None, None
+        excel_path = None
     return {
         "dataframe": df,
         "audit_tables": audit_tables,
         "comparison": comparison,
         "excel_path": excel_path,
-        "db_path": db_path,
+        "db_path": None,
     }
 
 
@@ -5032,4 +4956,3 @@ if __name__ == "__main__":
         print("Comparison mode: outputs were not replaced.")
     else:
         print(result["excel_path"])
-        print(result["db_path"])

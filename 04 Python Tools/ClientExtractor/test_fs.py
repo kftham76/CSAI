@@ -7,6 +7,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 HERE = Path(__file__).resolve().parent
@@ -41,6 +42,77 @@ class FakeReader:
 
 
 class ExtractorTests(unittest.TestCase):
+    def test_default_head_read_never_calls_ocr(self):
+        with (
+            patch.object(fs, "PdfReader", return_value=FakeReader("")),
+            patch.object(
+                fs,
+                "ocr_pages",
+                side_effect=AssertionError("OCR must be opt-in"),
+            ),
+        ):
+            text, page_count = fs.read_head(Path("sparse.pdf"))
+
+        self.assertEqual(text, "")
+        self.assertEqual(page_count, 1)
+
+    def test_opt_in_head_read_uses_ocr_for_sparse_pdf(self):
+        recovered = ("Recovered financial statement text " * 10).strip()
+        with (
+            patch.object(fs, "PdfReader", return_value=FakeReader("")),
+            patch.object(fs, "ocr_pages", return_value={0: recovered}) as mocked,
+        ):
+            text, page_count = fs.read_head(
+                Path("sparse.pdf"),
+                allow_ocr=True,
+            )
+
+        self.assertEqual(text, recovered)
+        self.assertEqual(page_count, 1)
+        mocked.assert_called_once()
+
+    def test_receipts_are_skipped_without_being_opened(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fs_folder = Path(directory)
+            statement = fs_folder / "Company 2025 Approved.pdf"
+            receipt = fs_folder / "Company OR_XB290520260001.pdf"
+            statement.touch()
+            receipt.touch()
+            expected = fs.Candidate(
+                statement,
+                date(2025, 12, 31),
+                True,
+                4,
+                40,
+            )
+
+            with patch.object(fs, "make_candidate", return_value=expected) as mocked:
+                selected = fs.select_latest_pdf(fs_folder)
+
+        self.assertEqual(selected, expected)
+        mocked.assert_called_once_with(statement, allow_ocr=False)
+
+    def test_ocr_command_line_flag_is_opt_in(self):
+        with patch.object(sys, "argv", ["FS.py"]):
+            self.assertFalse(fs.parse_arguments().ocr)
+        with patch.object(sys, "argv", ["FS.py", "--ocr"]):
+            self.assertTrue(fs.parse_arguments().ocr)
+
+    def test_requested_ocr_reports_missing_dependencies(self):
+        original_import = __import__
+
+        def import_without_ocr_dependencies(name, *args, **kwargs):
+            if name == "numpy":
+                raise ImportError("numpy unavailable")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=import_without_ocr_dependencies):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "OCR was requested but its optional dependencies are unavailable",
+            ):
+                fs._ocr_engine()
+
     def test_date_formats_and_ligatures(self):
         text = "Company's current \ufb01nancial year end date 31/12/2025"
         parsed, explicit = fs.extract_financial_year_end(text)
