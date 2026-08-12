@@ -178,6 +178,227 @@ class ExtractorTests(unittest.TestCase):
             "DECLARING DIRECTOR",
         )
 
+    def test_declarant_accepts_section_251_variants_and_no_citation(self):
+        citations = (
+            "Pursuant to Section 251 (1) of the Companies Act 2016",
+            "Pursuant to Section 251 (1)b of the Companies Act 2016",
+            "Pursuant to Section 251 (1)(b) of the Companies Act 2016",
+            "",
+        )
+        for citation in citations:
+            with self.subTest(citation=citation or "no citation"):
+                text = f"""
+                STATUTORY DECLARATION
+                {citation}
+                I, LIM JIN HENG (I/C No.: 820704-07-5689), being the director
+                primarily responsible for the financial management of the company,
+                do solemnly and sincerely declare that the financial statements are correct
+                by virtue of the Statutory Declarations Act, 1960.
+                """
+                self.assertEqual(
+                    fs.extract_declarant_name(text, "LIM JIN HENG", "KHOR YEA JYE"),
+                    "LIM JIN HENG",
+                )
+
+    def test_brace_identification_and_second_responsible_director(self):
+        text = """
+        STATUTORY DECLARATION
+        Pursuant to Section 251 (1) (b) of the Companies Act 2016
+        I, TAN KOOI IM {NRIC No.: 811013-02-5266}, the director primarily
+        responsible for the financial management of the company, do solemnly
+        and sincerely declare that the financial statements are correct.
+        Disclosure whether the first director is also primarily responsible for
+        financial management of the company
+        Not primarily responsible for financial management of the company
+        Type of identification of first director who signed Statement by Directors
+        Disclosure whether the second director is also primarily responsible for
+        financial management of the company
+        Primarily responsible for financial management of the company
+        Type of identification of second director who signed Statement by Directors
+        """
+        self.assertEqual(
+            fs.extract_declarant_name(
+                text,
+                "KHOR JING JIUN",
+                "TAN KOOI IM",
+                company="JJTECH Sdn Bhd",
+            ),
+            "TAN KOOI IM",
+        )
+
+    def test_responsibility_status_does_not_treat_not_as_positive(self):
+        text = """
+        Disclosure whether the first director is also primarily responsible for
+        financial management of the company
+        Not primarily responsible for financial management of the company
+        Type of identification of first director who signed Statement by Directors
+        Disclosure whether the second director is also primarily responsible for
+        financial management of the company
+        Primarily responsible for financial management of the company
+        Type of identification of second director who signed Statement by Directors
+        """
+        self.assertFalse(fs.director_responsibility_status(text, "first"))
+        self.assertTrue(fs.director_responsibility_status(text, "second"))
+        self.assertEqual(
+            fs.extract_declarant_name(text, "NG CHAI LING", "TAN CHIN SIANG"),
+            "TAN CHIN SIANG",
+        )
+
+    def test_statement_only_uses_responsible_first_director(self):
+        text = """
+        STATEMENT BY DIRECTORS
+        Disclosure whether the first director is also primarily responsible for
+        financial management of the company
+        Primarily responsible for financial management of the company
+        Type of identification of first director who signed Statement by Directors
+        Disclosure whether the second director is also primarily responsible for
+        financial management of the company
+        Not primarily responsible for financial management of the company
+        Type of identification of second director who signed Statement by Directors
+        """
+        self.assertEqual(
+            fs.extract_declarant_name(
+                text,
+                "Tan Tian Kong @ Tang Tian Kong",
+                "Lim Swee Choo",
+            ),
+            "Tan Tian Kong @ Tang Tian Kong",
+        )
+
+    def test_malformed_direct_declaration_uses_above_named_director(self):
+        text = """
+        STATUTORY DECLARATION
+        Pursuant to Section 251 (1) (b) of the Companies Act 2016
+        I, , the director primarily responsible for the financial management of
+        TAN SENG LAI {NRIC No.: 520715-02-5391}, do solemnly and sincerely
+        declare that the financial statements are correct.
+        Subscribed and solemnly declared by the above-named Tan Seng Lai )
+        at Sungai Petani
+        Disclosure whether the first director is also primarily responsible for
+        financial management of the company
+        Not primarily responsible for financial management of the company
+        Type of identification of first director who signed Statement by Directors
+        Disclosure whether the second director is also primarily responsible for
+        financial management of the company
+        Primarily responsible for financial management of the company
+        Type of identification of second director who signed Statement by Directors
+        """
+        self.assertEqual(
+            fs.extract_declarant_name(
+                text,
+                "TAN SENG KEAT @ ONG SENG KEAT",
+                "TAN SENG LAI",
+            ),
+            "TAN SENG LAI",
+        )
+
+    def test_exempt_private_company_uses_certificate_director(self):
+        text = """
+        Type of submission FS-EPC
+        Name of director who signed certificate of exempt private company
+        TAN YEN BOON
+        Type of identification of director who signed certificate of exempt private company
+        MyKad
+        """
+        self.assertEqual(
+            fs.extract_declarant_name(text, None, None),
+            "TAN YEN BOON",
+        )
+        self.assertEqual(
+            fs.extract_statement_signers(text),
+            (1, "TAN YEN BOON", None),
+        )
+
+    def test_false_statutory_declaration_headings_are_ignored(self):
+        text = """
+        Statutory Declaration for rectification
+        Date of Statutory Declaration 2026-03-03
+        Disclosure of financial statements preparation for current submission
+        """
+        self.assertIsNone(fs.statutory_section(text))
+        self.assertIsNone(fs.extract_declarant_name(text, None, None))
+        self.assertEqual(fs.declaration_ocr_page_numbers([text]), [])
+
+    def test_implausible_direct_capture_uses_structured_director(self):
+        text = """
+        STATUTORY DECLARATION
+        I, the director primarily responsible for the financial management
+        SAW LAI CHONG (NRIC No.: 123), do solemnly declare that the financial
+        statements are correct under the Statutory Declarations Act 1960.
+        Disclosure whether the first director is also primarily responsible for
+        financial management of the company
+        Primarily responsible for financial management of the company
+        Type of identification of first director who signed Statement by Directors
+        """
+        self.assertEqual(
+            fs.extract_declarant_name(text, "SAW LAI CHONG", None),
+            "SAW LAI CHONG",
+        )
+
+    def test_conflicting_declaration_and_structured_director_fails(self):
+        text = """
+        STATUTORY DECLARATION
+        I, FIRST DIRECTOR (NRIC No.: 123), being the director primarily
+        responsible for financial management, do solemnly declare that the
+        financial statements are correct under the Statutory Declarations Act 1960.
+        Disclosure whether the first director is also primarily responsible for
+        financial management of the company
+        Not primarily responsible for financial management of the company
+        Type of identification of first director who signed Statement by Directors
+        Disclosure whether the second director is also primarily responsible for
+        financial management of the company
+        Primarily responsible for financial management of the company
+        Type of identification of second director who signed Statement by Directors
+        """
+        with self.assertRaisesRegex(ValueError, "CONFLICT CO.*director conflict"):
+            fs.extract_declarant_name(
+                text,
+                "FIRST DIRECTOR",
+                "SECOND DIRECTOR",
+                company="CONFLICT CO",
+            )
+
+    def test_unresolved_declarant_uses_targeted_ocr_when_enabled(self):
+        base_text = """
+        Disclosure of Statement by Directors
+        STATEMENT BY DIRECTORS
+        Number of directors signing Statement by Directors 1
+        Name of first director who signed Statement by Directors OCR DIRECTOR
+        Type of identification of first director who signed Statement by Directors
+        """
+        recovered = """
+        STATUTORY DECLARATION
+        I, OCR DIRECTOR (NRIC No.: 123), being the director primarily responsible
+        for financial management, do solemnly declare that the financial statements
+        are correct under the Statutory Declarations Act 1960.
+        """
+        candidate = fs.Candidate(
+            Path("mixed-content.pdf"),
+            date(2025, 12, 31),
+            True,
+            4,
+            20,
+        )
+        reader = FakeReader(base_text)
+        with (
+            patch.object(fs, "read_selected_pdf", return_value=(reader, [base_text])),
+            patch.object(fs, "ocr_pages", return_value={0: recovered}) as mocked,
+        ):
+            row = fs.extract_selected(candidate, "OCR CO", allow_ocr=True)
+
+        self.assertEqual(row[fs.COLUMNS[7]], "OCR DIRECTOR")
+        mocked.assert_called_once_with(candidate.path, [0])
+
+    def test_validation_rejects_missing_declarant(self):
+        row = {column: None for column in fs.COLUMNS}
+        row["Company"] = "MISSING CO"
+        row["Source PDF"] = r"D:\missing.pdf"
+        with self.assertRaisesRegex(
+            ValueError,
+            "Missing statutory-declaration director for MISSING CO",
+        ):
+            fs.validate_rows([row])
+
     def test_fee_blank_is_null_and_dash_is_zero(self):
         blank = """
         Director's remuneration

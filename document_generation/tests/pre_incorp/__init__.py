@@ -1,0 +1,1 @@
+"""Pre-incorporation generator tests."""

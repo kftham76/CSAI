@@ -18,6 +18,8 @@ DB_FOLDER = (
 
 CLIENT_DB = DB_FOLDER / "csai_master.db"
 
+NEW_INCORP_DB = DB_FOLDER / "new_incorp.db"
+
 EBOS_DB = DB_FOLDER / "ebos_master.db"
 
 AUDITORS_DB = DB_FOLDER / "auditors.db"

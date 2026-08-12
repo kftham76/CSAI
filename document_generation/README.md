@@ -1,107 +1,45 @@
-# Automated AGM Document Generator
+# CSAI Document Generation
 
-This package generates AGM approval DOCX documents for Paragraph 15 and
-Regulation 90 companies. It reads
-the existing `csai_langchain` repositories in read-only mode; it does not modify
-`csai_langchain` and does not use an LLM or RAG retrieval.
+The document-generation codebase contains two independent programs. Both read
+the existing `csai_langchain` repositories in read-only mode.
 
-## Files and locations
-
-- Production template: `C:\CSAI_OS\document_generation\templates\agm_approve_accounts_template.docx`
-- First/irregular-period template: `C:\CSAI_OS\document_generation\templates\first_agm_approve_accounts_template.docx`
-- Regulation 90 template: `C:\CSAI_OS\document_generation\templates\agm_approve_accounts_template_section_90.docx`
-- Program and tests: `C:\CSAI_OS\document_generation`
-- Default generated output: `D:\CSAI_DATA\AGM Output`
-- Preserved source template: `C:\CSAI_OS\03 Templates\AGM\template_test.doc`
-
-## Usage
-
-Run from `C:\CSAI_OS`:
+## AGM
 
 ```powershell
-python -m document_generation --company "CS SURIA SDN. BHD."
+python -m document_generation.agm_generation --company "CS SURIA SDN. BHD." --overwrite
 ```
 
-Multiple companies are independent. An invalid company produces a complete
-validation result without preventing valid companies from being generated:
+The legacy command remains an AGM-compatible alias:
 
 ```powershell
-python -m document_generation `
-  --company "CS SURIA SDN. BHD." `
-  --company "CY GLOBAL INDUSTRIES SDN. BHD." `
+python -m document_generation --company "CS SURIA SDN. BHD." --overwrite
+```
+
+AGM implementation details are documented in
+`document_generation\agm_generation\README.md`. Its templates are under
+`document_generation\templates\agm`.
+
+## Pre-incorporation
+
+```powershell
+python -m document_generation.pre_incorp_generation `
+  --company "EXAMPLE SDN. BHD." `
   --overwrite
 ```
 
-Useful options:
+The program retrieves the current director/member roster and supporting
+company and EBOS/BO fields through `csai_langchain` from the Excel-mirrored
+`new_incorp.db:New_Incorp` table. It does not request director confirmation or
+manual director fields; the only interactive input is a missing Reference No.
+Each current director receives one S201 declaration and one Director's Notice
+under Sections 57, 219 and 221.
 
-- `--dry-run`: retrieve and validate data without creating a DOCX.
-- `--template PATH`: explicitly override automatic template selection.
-- `--output-dir PATH`: change the output directory.
-- `--output PATH`: set one output file; exactly one `--company` is required.
-- `--overwrite`: replace an existing generated file.
-
-The Python interface is:
-
-```python
-from document_generation import generate_documents
-
-results = generate_documents(
-    ["CS SURIA SDN. BHD."],
-    template_path=None,
-    output_dir=r"D:\CSAI_DATA\AGM Output",
-    overwrite=False,
-    dry_run=False,
-    section90_inputs={"ATLAS AVENUE GOLD & JEWELLERY SDN. BHD.": "THIRTEENTH"},
-)
-```
-
-Automatic selection first classifies the normalized DWR. Paragraph 15/Third
-Schedule companies use the first-AGM template when the financial-period span is
-outside 364–367 days and otherwise use the standard template. Regulation
-90/Table A/Articles of Association companies always use the Section 90 template.
-Unknown DWR wording falls back to the standard template. An explicit template
-path always wins. Section 90 CLI runs prompt once per company for an optional
-AGM ordinal; `--dry-run` reports that requirement without pausing.
-
-## Data sources
-
-| Information | Existing repository/database |
-|---|---|
-| Company, registration number, directors, genders, members, addresses and shares | `CompanyRepository` / `csai_master.db:Client_Master` |
-| Financial-year start/end, approval and circulation dates, declarant, statement signers, FS auditor and directors' fees | `FinancialStatementRepository` / `FS.db:FS` |
-| DWR and MWR statutory clauses | `ConstitutionRepository` / `constitutions.db:Sheet1` |
-| Auditor | `AuditorRepository` / `auditors.db:Sheet1` |
-| Retiring directors | Checked names in the FYE-year column of the rotation workbook under `D:\CSAI_CLIENTS\<Folder>\AGM` |
-
-The Client_Master match establishes the canonical company name before other
-sources are queried. Registration numbers and auditor names are cross-checked
-when the secondary source supplies them.
-
-## Validation behavior
-
-Generation is blocked for missing or ambiguous data, invalid date order,
-missing director/member identities or member addresses, director/signatory
-mismatches, duplicate identities, source cross-check failures, invalid fees or
-fee shares, output collisions, and unresolved template markers. The temporary
-DOCX is validated before it is moved to its final name.
-
-For Templates 1/2, a positive FS fee uses only members who also match a Client_Master director as
-eligible. Their shares are normalized over the eligible group. Currency uses
-`Decimal`, two-decimal `ROUND_HALF_UP`, and a final-row remainder so the displayed
-rows always equal the FS total. A null or zero fee removes the complete section
-and renumbers the following DWR resolutions.
-
-Template 3 intentionally has no fee or Authority-to-File resolution and does
-not require an MWR clause. Its notice date is circulation date minus 18 days;
-meeting and letter dates use the circulation date. Missing or ambiguous
-rotation data blocks generation.
+The default output is
+`D:\CSAI_DATA\pre-incorp Output\<Company Name>`. Use `--dry-run` to retrieve a
+source-attributed draft without prompting or creating DOCX files.
 
 ## Tests
 
 ```powershell
 python -m unittest discover -s document_generation\tests -v
 ```
-
-The suite also covers DWR variants, rotation discovery and validation, Section
-90 prompting, derived dates, one through six people in every dynamic grid, and
-the Section 90 NAME/SIGNATURE attendance register.

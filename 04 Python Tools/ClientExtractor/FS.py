@@ -396,6 +396,10 @@ def extract_statement_signers(text: str) -> tuple[int | None, str | None, str | 
     fallback_first, fallback_second = conventional_statement_signers(text)
     first = first or fallback_first
     second = second or fallback_second
+    if count is None and first is None and second is None:
+        certificate_director = exempt_private_company_director(text)
+        if certificate_director:
+            return 1, certificate_director, None
     if count is None and first:
         count = 2 if second else 1
     if count is not None and count < 2:
@@ -408,61 +412,185 @@ def statutory_section(text: str) -> str | None:
     matches = list(re.finditer(r"STATUTORY\s+DECLARATION", searchable, re.IGNORECASE))
     for match in matches:
         section = searchable[match.start() : match.start() + 5000]
-        if re.search(r"Section\s+251\s*\(\s*1\s*\)\s*\(\s*b\s*\)", section, re.IGNORECASE):
-            end = re.search(r"\bStatement\s+by\s+Directors\b", section[100:], re.IGNORECASE)
-            return section[: 100 + end.start()] if end else section
+        if not re.search(r"\bI\s*,", section, re.IGNORECASE):
+            continue
+        if not re.search(r"\bsolemn(?:ly)?\b", section, re.IGNORECASE):
+            continue
+        if not re.search(
+            r"(?:financial\s+management|financial\s+statements|"
+            r"Statutory\s+Declarations\s+Act)",
+            section,
+            re.IGNORECASE,
+        ):
+            continue
+        end = re.search(r"\bStatement\s+by\s+Directors\b", section[100:], re.IGNORECASE)
+        return section[: 100 + end.start()] if end else section
     return None
+
+
+def name_key(value: str | None) -> str:
+    return flat_text(value or "").casefold()
+
+
+def canonical_director_name(
+    value: str | None,
+    first_director: str | None,
+    second_director: str | None,
+) -> str | None:
+    candidate = clean_name(value)
+    if not candidate:
+        return None
+    candidate_key = name_key(candidate)
+    for known_name in (first_director, second_director):
+        if known_name and candidate_key == name_key(known_name):
+            return known_name
+    return candidate
+
+
+def plausible_person_name(value: str | None) -> bool:
+    candidate = clean_name(value)
+    if not candidate or len(candidate) > 120:
+        return False
+    if len(re.findall(r"[A-Za-z]", candidate)) < 3:
+        return False
+    lower = candidate.casefold()
+    rejected_fragments = (
+        "companies act",
+        "company no",
+        "director primarily",
+        "financial management",
+        "financial statements",
+        "page ",
+        "section 251",
+        "solemn",
+        "statutory declaration",
+    )
+    return not any(fragment in lower for fragment in rejected_fragments)
+
+
+def explicit_declarant_name(
+    section: str | None,
+    first_director: str | None,
+    second_director: str | None,
+) -> str | None:
+    if not section:
+        return None
+
+    direct = re.search(
+        r"\bI\s*,\s*([A-Za-z][A-Za-z .@'&/-]{1,}?)\s*"
+        r"(?:[({]|,\s*(?:being\s+)?(?:a|the)\s+director|"
+        r"\s+being\s+(?:a|the)\s+director)",
+        section,
+        re.IGNORECASE,
+    )
+    candidate = clean_name(direct.group(1)) if direct else None
+    if candidate and plausible_person_name(candidate):
+        return canonical_director_name(candidate, first_director, second_director)
+
+    subscribed = re.search(
+        r"(?:the\s+)?above[- ]?named\s+([A-Za-z][A-Za-z .@'&/-]{2,}?)"
+        r"(?=\s*(?:at\b|\)))",
+        section,
+        re.IGNORECASE,
+    )
+    candidate = clean_name(subscribed.group(1)) if subscribed else None
+    if candidate and plausible_person_name(candidate):
+        return canonical_director_name(candidate, first_director, second_director)
+    return None
+
+
+def director_responsibility_status(text: str, ordinal: str) -> bool | None:
+    searchable = flat_text(text)
+    match = re.search(
+        rf"Disclosure\s+whether\s+the\s+{ordinal}\s+director\s+"
+        rf"(?:is\s+also\s+)?primarily\s+responsible\s+for\s+financial\s+"
+        rf"management\s+of\s+the\s+company\s+"
+        rf"((?:Not\s+)?Primarily\s+responsible\s+for\s+financial\s+"
+        rf"management\s+of\s+the\s+company)\b",
+        searchable,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return not match.group(1).casefold().startswith("not ")
+
+
+def responsible_director_from_disclosures(
+    text: str,
+    first_director: str | None,
+    second_director: str | None,
+    company: str | None = None,
+) -> str | None:
+    responsible: list[str] = []
+    if first_director and director_responsibility_status(text, "first") is True:
+        responsible.append(first_director)
+    if second_director and director_responsibility_status(text, "second") is True:
+        responsible.append(second_director)
+    if len(responsible) > 1:
+        prefix = f"{company}: " if company else ""
+        raise ValueError(
+            f"{prefix}multiple directors are marked primarily responsible for "
+            "financial management"
+        )
+    return responsible[0] if responsible else None
+
+
+def exempt_private_company_director(text: str) -> str | None:
+    searchable = flat_text(text)
+    if not re.search(r"(?:FS-EPC|exempt\s+private\s+company)", searchable, re.IGNORECASE):
+        return None
+    match = re.search(
+        r"Name\s+of\s+director\s+who\s+signed\s+certificate\s+of\s+"
+        r"exempt\s+private\s+company\s+(.*?)\s+"
+        r"Type\s+of\s+identification\s+of\s+director",
+        searchable,
+        re.IGNORECASE,
+    )
+    candidate = clean_name(match.group(1)) if match else None
+    return candidate if plausible_person_name(candidate) else None
 
 
 def extract_declarant_name(
     text: str,
     first_director: str | None,
     second_director: str | None,
+    company: str | None = None,
 ) -> str | None:
     section = statutory_section(text)
-    if not section:
-        return None
+    explicit = explicit_declarant_name(section, first_director, second_director)
+    responsible = responsible_director_from_disclosures(
+        text,
+        first_director,
+        second_director,
+        company=company,
+    )
+    if explicit and responsible and name_key(explicit) != name_key(responsible):
+        prefix = f"{company}: " if company else ""
+        raise ValueError(
+            f"{prefix}statutory-declaration director conflict: declaration names "
+            f"{explicit!r}, structured filing names {responsible!r}"
+        )
+    if explicit or responsible:
+        return explicit or responsible
 
-    direct = re.search(
-        r"\bI,\s*([A-Z][A-Z .@'&/-]{2,}?)\s*(?:\(|,\s*being|being\s+(?:a|the)\s+director)",
-        section,
-        re.IGNORECASE,
-    )
-    candidate = clean_name(direct.group(1)) if direct else None
-    if candidate:
-        for known_name in (first_director, second_director):
-            if known_name and flat_text(candidate).casefold() == flat_text(known_name).casefold():
-                return known_name
-        return candidate
+    certificate = exempt_private_company_director(text)
+    return canonical_director_name(certificate, first_director, second_director)
 
-    subscribed = re.search(
-        r"the\s+abovenamed\s+([A-Z][A-Za-z .@'&/-]{2,}?)\s+at\b",
-        section,
-        re.IGNORECASE,
-    )
-    candidate = clean_name(subscribed.group(1)) if subscribed else None
-    if candidate:
-        for known_name in (first_director, second_director):
-            if known_name and flat_text(candidate).casefold() == flat_text(known_name).casefold():
-                return known_name
-        return candidate
 
-    whole = flat_text(text)
-    first_is_responsible = re.search(
-        r"Disclosure\s+whether\s+the\s+first\s+director.*?Primarily\s+responsible\s+for\s+financial\s+management",
-        whole,
-        re.IGNORECASE,
-    )
-    if first_is_responsible and first_director:
-        return first_director
-    second_is_responsible = re.search(
-        r"Disclosure\s+whether\s+the\s+second\s+director.*?Primarily\s+responsible\s+for\s+financial\s+management",
-        whole,
-        re.IGNORECASE,
-    )
-    if second_is_responsible and second_director:
-        return second_director
-    return None
+def declaration_ocr_page_numbers(pages: list[str]) -> list[int]:
+    candidates: list[int] = []
+    for index, text in enumerate(pages):
+        searchable = flat_text(text)
+        if re.search(
+            r"(?:Disclosure\s+of\s+Statement\s+by\s+Directors|"
+            r"\bSTATEMENT\s+BY\s+DIRECTORS\b|"
+            r"(?<!Date\sof\s)\bSTATUTORY\s+DECLARATION\b"
+            r"(?!\s+for\s+rectification))",
+            searchable,
+            re.IGNORECASE,
+        ):
+            candidates.append(index)
+    return candidates
 
 
 def extract_audit_firm(reader: PdfReader, pages: list[str]) -> str | None:
@@ -600,6 +728,29 @@ def extract_selected(
 ) -> dict:
     reader, pages = read_selected_pdf(candidate.path, allow_ocr=allow_ocr)
     whole = "\n".join(pages)
+    count, first, second = extract_statement_signers(whole)
+    declarant = extract_declarant_name(
+        whole,
+        first,
+        second,
+        company=company,
+    )
+    if declarant is None and allow_ocr:
+        page_numbers = declaration_ocr_page_numbers(pages)
+        recovered = ocr_pages(candidate.path, page_numbers)
+        for index, text in recovered.items():
+            recovered_text = normalize_text(text)
+            if recovered_text:
+                pages[index] = normalize_text(f"{pages[index]}\n{recovered_text}")
+        whole = "\n".join(pages)
+        count, first, second = extract_statement_signers(whole)
+        declarant = extract_declarant_name(
+            whole,
+            first,
+            second,
+            company=company,
+        )
+
     row = {column: None for column in COLUMNS}
     row["Company"] = company
     row["Source PDF"] = str(candidate.path.resolve())
@@ -608,11 +759,10 @@ def extract_selected(
     if row[COLUMNS[3]] is None:
         row[COLUMNS[3]] = candidate.financial_year_end
 
-    count, first, second = extract_statement_signers(whole)
     row[COUNT_COLUMN] = count
     row[COLUMNS[9]] = first
     row[COLUMNS[10]] = second if count and count > 1 else None
-    row[COLUMNS[7]] = extract_declarant_name(whole, first, second)
+    row[COLUMNS[7]] = declarant
     row[COLUMNS[11]] = extract_audit_firm(reader, pages)
     row[FEE_COLUMN] = extract_current_director_fee(reader, pages)
     return row
@@ -626,6 +776,11 @@ def validate_rows(rows: list[dict]) -> None:
     for row in rows:
         if list(row) != COLUMNS:
             raise ValueError(f"Unexpected row schema for {row.get('Company', '(unknown)')}")
+        if not clean_name(row[COLUMNS[7]]):
+            raise ValueError(
+                "Missing statutory-declaration director for "
+                f"{row['Company']} ({row['Source PDF']})"
+            )
         count = row[COUNT_COLUMN]
         if count is not None and (not isinstance(count, int) or count < 0):
             raise ValueError(f"Invalid director count for {row['Company']}: {count!r}")
